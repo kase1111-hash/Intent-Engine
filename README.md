@@ -802,7 +802,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for details.
 
 ## License
 
-MIT
+tbd
 
 Commercial-friendly, patent-grant included, attribution required.
 
