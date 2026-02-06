@@ -1,0 +1,65 @@
+# Sample constitutional rules for testing.
+# These rules define safety constraints for sensitive actions,
+# using prosody checks to verify genuine intent.
+
+rules:
+  # Destructive file operations require sincere/calm emotion and
+  # measured speech. Sarcastic or angry users are blocked.
+  delete_files:
+    triggers:
+      - "delete"
+      - "remove"
+      - "erase"
+    required_prosody:
+      emotion: ["sincere", "calm", "neutral"]
+      pitch_variance: low
+      speaking_rate: [2.0, 5.0]
+    forbidden_prosody:
+      emotion: ["sarcastic", "angry"]
+    verification:
+      method: explicit_confirmation
+      retries: 2
+
+  # Financial transactions require calm, sincere speech with
+  # no signs of distress or coercion.
+  financial_transaction:
+    triggers:
+      - "transfer"
+      - "payment"
+      - "send_money"
+    required_prosody:
+      emotion: ["sincere", "calm", "neutral"]
+    forbidden_prosody:
+      emotion: ["fearful", "angry", "frustrated"]
+    verification:
+      method: two_factor
+      retries: 3
+
+  # Account deletion is a high-severity action that requires
+  # sincerity and is denied entirely for sarcastic users
+  # (no verification fallback).
+  account_deletion:
+    triggers:
+      - "delete_account"
+      - "close_account"
+      - "terminate_account"
+    required_prosody:
+      emotion: ["sincere"]
+    forbidden_prosody:
+      emotion: ["sarcastic", "angry", "frustrated"]
+
+  # Emergency requests should be allowed with high urgency
+  # (fast speech rate) but blocked if the user seems calm
+  # or amused (potential prank).
+  emergency_action:
+    triggers:
+      - "emergency"
+      - "urgent"
+      - "help_now"
+    required_prosody:
+      speaking_rate: [4.0, 10.0]
+    forbidden_prosody:
+      emotion: ["sarcastic", "joyful"]
+    verification:
+      method: explicit_confirmation
+      retries: 1
