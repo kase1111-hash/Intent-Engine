@@ -21,9 +21,14 @@ from prosody_protocol import (
     IMLAssembler,
     IMLParser,
     IMLValidator,
+    ProfileApplier,
+    ProfileLoader,
     ProsodyAnalyzer,
+    ProsodyMapping,
+    ProsodyProfile,
     RuleBasedEmotionClassifier,
     SpanFeatures,
+    ValidationResult,
 )
 
 from intent_engine.constitutional.filter import ConstitutionalFilter
@@ -105,14 +110,14 @@ class IntentEngine:
         if constitutional_rules:
             self._filter = ConstitutionalFilter.from_yaml(constitutional_rules)
 
-        # Optional accessibility profile
-        self._profile: object | None = None
-        self._profile_applier: object | None = None
-        if prosody_profile:
-            from prosody_protocol import ProfileApplier, ProfileLoader
+        # Profile components (always available for management API)
+        self._profile_loader = ProfileLoader()
+        self._profile_applier = ProfileApplier()
 
-            self._profile = ProfileLoader().load(prosody_profile)
-            self._profile_applier = ProfileApplier()
+        # Optional accessibility profile (loaded from path)
+        self._profile: ProsodyProfile | None = None
+        if prosody_profile:
+            self._profile = self._profile_loader.load(prosody_profile)
 
         # LRU cache for audio processing results
         self._cache_size = cache_size
@@ -246,14 +251,10 @@ class IntentEngine:
         emotion, confidence = self._emotion_classifier.classify(features)
 
         # Apply prosody profile if available
-        if self._profile and self._profile_applier and features:
+        if self._profile and features:
             try:
-                feat_dict = {}
-                if features[0].f0_mean is not None:
-                    feat_dict["f0_mean"] = str(features[0].f0_mean)
-                if features[0].speech_rate is not None:
-                    feat_dict["speech_rate"] = str(features[0].speech_rate)
-                emotion, confidence = self._profile_applier.apply(  # type: ignore[union-attr]
+                feat_dict = self._derive_feature_labels(features)
+                emotion, confidence = self._profile_applier.apply(
                     self._profile, feat_dict, emotion, confidence
                 )
             except Exception:
@@ -390,6 +391,225 @@ class IntentEngine:
         return self._filter.evaluate(
             intent, prosody_features, emotion=emotion, context=context
         )
+
+    # -- Feature label derivation --
+
+    # Thresholds for converting numeric SpanFeatures to categorical labels.
+    # These baselines approximate typical adult speech.
+    _F0_LOW = 120.0   # Hz -- below this is "low" pitch
+    _F0_HIGH = 220.0  # Hz -- above this is "high" pitch
+    _INTENSITY_QUIET = 55.0   # dB
+    _INTENSITY_LOUD = 75.0    # dB
+    _RATE_SLOW = 3.0   # syllables/sec
+    _RATE_FAST = 6.0   # syllables/sec
+
+    @classmethod
+    def _derive_feature_labels(
+        cls, features: list[SpanFeatures]
+    ) -> dict[str, str]:
+        """Convert numeric SpanFeatures into categorical labels.
+
+        The profile system uses categorical labels (``"high"``,
+        ``"low"``, ``"normal"``) rather than raw numbers.  This
+        method aggregates across all spans and produces a label
+        dict suitable for ``ProfileApplier.apply()``.
+
+        Parameters
+        ----------
+        features:
+            List of per-span prosodic features from
+            ``ProsodyAnalyzer.analyze()``.
+
+        Returns
+        -------
+        dict[str, str]
+            Categorical labels for profile matching, e.g.
+            ``{"f0_mean": "high", "intensity_mean": "normal",
+            "speech_rate": "fast", "quality": "breathy"}``.
+        """
+        labels: dict[str, str] = {}
+
+        if not features:
+            return labels
+
+        # Aggregate numeric values across spans (use first span as primary)
+        f0_values = [f.f0_mean for f in features if f.f0_mean is not None]
+        intensity_values = [
+            f.intensity_mean for f in features if f.intensity_mean is not None
+        ]
+        rate_values = [
+            f.speech_rate for f in features if f.speech_rate is not None
+        ]
+
+        # F0 (pitch)
+        if f0_values:
+            avg_f0 = sum(f0_values) / len(f0_values)
+            if avg_f0 < cls._F0_LOW:
+                labels["f0_mean"] = "low"
+            elif avg_f0 > cls._F0_HIGH:
+                labels["f0_mean"] = "high"
+            else:
+                labels["f0_mean"] = "normal"
+
+        # Intensity (loudness)
+        if intensity_values:
+            avg_intensity = sum(intensity_values) / len(intensity_values)
+            if avg_intensity < cls._INTENSITY_QUIET:
+                labels["intensity_mean"] = "quiet"
+            elif avg_intensity > cls._INTENSITY_LOUD:
+                labels["intensity_mean"] = "loud"
+            else:
+                labels["intensity_mean"] = "normal"
+
+        # Speech rate
+        if rate_values:
+            avg_rate = sum(rate_values) / len(rate_values)
+            if avg_rate < cls._RATE_SLOW:
+                labels["speech_rate"] = "slow"
+            elif avg_rate > cls._RATE_FAST:
+                labels["speech_rate"] = "fast"
+            else:
+                labels["speech_rate"] = "normal"
+
+        # Voice quality (pass through directly if present)
+        qualities = [f.quality for f in features if f.quality is not None]
+        if qualities:
+            labels["quality"] = qualities[0]
+
+        return labels
+
+    # -- Augmentative communication --
+
+    async def type_to_speech(
+        self, text: str, emotion: str = "neutral"
+    ) -> Audio:
+        """Convert typed text to emotionally appropriate speech.
+
+        Uses ``prosody_protocol.TextToIML`` to predict prosody from
+        plain text, then synthesizes with the given emotion.  This
+        supports augmentative and alternative communication (AAC)
+        use cases where users type instead of speak.
+
+        Parameters
+        ----------
+        text:
+            Plain text to convert to speech.
+        emotion:
+            Emotion label for synthesis.
+
+        Returns
+        -------
+        Audio
+            Synthesized speech audio.
+        """
+        from prosody_protocol import TextToIML
+
+        predictor = TextToIML()
+        predictor.predict(text, context=emotion)
+
+        return await self.synthesize_speech(text, emotion=emotion)
+
+    def type_to_speech_sync(
+        self, text: str, emotion: str = "neutral"
+    ) -> Audio:
+        """Synchronous wrapper for :meth:`type_to_speech`."""
+        return asyncio.get_event_loop().run_until_complete(
+            self.type_to_speech(text, emotion=emotion)
+        )
+
+    # -- Profile management API --
+
+    def load_profile(self, path: str) -> ProsodyProfile:
+        """Load a prosody profile from a JSON file.
+
+        Parameters
+        ----------
+        path:
+            Path to a prosody profile JSON file conforming to
+            ``schemas/prosody-profile.schema.json``.
+
+        Returns
+        -------
+        ProsodyProfile
+            The loaded profile.
+        """
+        profile = self._profile_loader.load(path)
+        logger.info("Loaded prosody profile: %s", profile.user_id)
+        return profile
+
+    def set_profile(self, profile: ProsodyProfile) -> None:
+        """Set the active prosody profile for this engine.
+
+        Parameters
+        ----------
+        profile:
+            A ``ProsodyProfile`` to apply during emotion
+            classification in ``process_voice_input()``.
+        """
+        self._profile = profile
+        logger.info("Active profile set: %s", profile.user_id)
+
+    def clear_profile(self) -> None:
+        """Remove the active prosody profile."""
+        self._profile = None
+        logger.info("Active profile cleared")
+
+    def create_profile(
+        self,
+        user_id: str,
+        mappings: list[dict[str, Any]],
+        description: str | None = None,
+        profile_version: str = "1.0",
+    ) -> ProsodyProfile:
+        """Create a new prosody profile from mapping dicts.
+
+        Parameters
+        ----------
+        user_id:
+            Unique identifier for the user.
+        mappings:
+            List of mapping dicts, each with ``"pattern"`` (dict),
+            ``"interpretation_emotion"`` (str), and optional
+            ``"confidence_boost"`` (float).
+        description:
+            Optional human-readable profile description.
+        profile_version:
+            Profile schema version.
+
+        Returns
+        -------
+        ProsodyProfile
+            The newly created (in-memory) profile.
+        """
+        pp_mappings = [
+            ProsodyMapping(
+                pattern=m["pattern"],
+                interpretation_emotion=m["interpretation_emotion"],
+                confidence_boost=m.get("confidence_boost", 0.0),
+            )
+            for m in mappings
+        ]
+        return ProsodyProfile(
+            profile_version=profile_version,
+            user_id=user_id,
+            description=description,
+            mappings=pp_mappings,
+        )
+
+    def validate_profile(self, profile: ProsodyProfile) -> ValidationResult:
+        """Validate a prosody profile against the schema.
+
+        Parameters
+        ----------
+        profile:
+            The profile to validate.
+
+        Returns
+        -------
+        ValidationResult
+            Validation result from ``prosody_protocol``.
+        """
+        return self._profile_loader.validate(profile)
 
     # -- Synchronous convenience wrappers --
 
