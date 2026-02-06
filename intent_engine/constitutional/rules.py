@@ -12,7 +12,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import logging
+
 import yaml
+
+logger = logging.getLogger(__name__)
+
+# Prosody Protocol core emotion vocabulary.
+CORE_EMOTIONS = frozenset({
+    "neutral", "sincere", "sarcastic", "frustrated", "joyful",
+    "uncertain", "angry", "sad", "fearful", "surprised",
+    "disgusted", "calm", "empathetic",
+})
 
 
 @dataclass(frozen=True)
@@ -92,8 +103,17 @@ def _parse_prosody_condition(data: dict[str, Any] | None) -> ProsodyCondition | 
         if isinstance(sr, (list, tuple)) and len(sr) == 2:
             speaking_rate = (float(sr[0]), float(sr[1]))
 
+    emotions = data.get("emotion", [])
+    for emo in emotions:
+        if emo not in CORE_EMOTIONS:
+            logger.warning(
+                "Emotion %r in constitutional rule is not in the Prosody Protocol "
+                "core vocabulary; it may never match.",
+                emo,
+            )
+
     return ProsodyCondition(
-        emotion=data.get("emotion", []),
+        emotion=emotions,
         pitch_variance=data.get("pitch_variance"),
         speaking_rate=speaking_rate,
     )

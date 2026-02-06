@@ -138,7 +138,7 @@ class TestTTSProviderInterface:
         tts = ConcreteTTS()
         assert isinstance(tts, TTSProvider)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             tts.synthesize("Hello", emotion="calm")
         )
         assert isinstance(result, SynthesisResult)

@@ -88,7 +88,7 @@ class TestFullPipeline:
             path = f.name
 
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 engine.process_voice_input(path)
             )
 
@@ -104,7 +104,7 @@ class TestFullPipeline:
         engine = create_mocked_engine()
         _setup_full_pipeline(engine)
 
-        response = asyncio.get_event_loop().run_until_complete(
+        response = asyncio.run(
             engine.generate_response(
                 "<utterance>Hello</utterance>",
                 tone="empathetic",
@@ -119,7 +119,7 @@ class TestFullPipeline:
         engine = create_mocked_engine()
         _setup_full_pipeline(engine)
 
-        audio = asyncio.get_event_loop().run_until_complete(
+        audio = asyncio.run(
             engine.synthesize_speech("Hello!", emotion="joyful")
         )
 
@@ -139,19 +139,19 @@ class TestFullPipeline:
 
         try:
             # Step 1: Process voice input
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 engine.process_voice_input(path)
             )
             assert result.emotion == "frustrated"
 
             # Step 2: Generate response using IML
-            response = asyncio.get_event_loop().run_until_complete(
+            response = asyncio.run(
                 engine.generate_response(result.iml, tone=result.suggested_tone)
             )
             assert isinstance(response, Response)
 
             # Step 3: Synthesize response speech
-            audio = asyncio.get_event_loop().run_until_complete(
+            audio = asyncio.run(
                 engine.synthesize_speech(response.text, emotion=response.emotion)
             )
             assert isinstance(audio, Audio)
@@ -272,7 +272,7 @@ class TestFullPipelineErrorRecovery:
 
         try:
             with pytest.raises(STTError, match="STT transcription failed"):
-                asyncio.get_event_loop().run_until_complete(
+                asyncio.run(
                     engine.process_voice_input(path)
                 )
         finally:
@@ -285,7 +285,7 @@ class TestFullPipelineErrorRecovery:
         )
 
         with pytest.raises(LLMError, match="LLM interpretation failed"):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 engine.generate_response("<iml/>")
             )
 
@@ -296,7 +296,7 @@ class TestFullPipelineErrorRecovery:
         )
 
         with pytest.raises(TTSError, match="TTS synthesis failed"):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 engine.synthesize_speech("Hello")
             )
 

@@ -111,7 +111,7 @@ class TestIntentEngineConstruction:
     def test_cache_initialized(self) -> None:
         engine = _create_engine()
         assert engine._cache == {}
-        assert engine._cache_order == []
+        assert len(engine._cache) == 0
 
 
 class TestProcessVoiceInput:
@@ -156,7 +156,7 @@ class TestProcessVoiceInput:
             audio_path = f.name
 
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 engine.process_voice_input(audio_path)
             )
 
@@ -197,7 +197,7 @@ class TestProcessVoiceInput:
             audio_path = f.name
 
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 engine.process_voice_input(audio_path)
             )
             # Should still return a result (text-only mode)
@@ -218,7 +218,7 @@ class TestProcessVoiceInput:
 
         try:
             with pytest.raises(STTError, match="STT transcription failed"):
-                asyncio.get_event_loop().run_until_complete(
+                asyncio.run(
                     engine.process_voice_input(audio_path)
                 )
         finally:
@@ -247,7 +247,7 @@ class TestProcessVoiceInput:
             audio_path = f.name
 
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 engine.process_voice_input(audio_path)
             )
             assert result.emotion == "sarcastic"
@@ -281,11 +281,11 @@ class TestCaching:
 
         try:
             # First call
-            result1 = asyncio.get_event_loop().run_until_complete(
+            result1 = asyncio.run(
                 engine.process_voice_input(audio_path)
             )
             # Second call should use cache
-            result2 = asyncio.get_event_loop().run_until_complete(
+            result2 = asyncio.run(
                 engine.process_voice_input(audio_path)
             )
 
@@ -318,10 +318,10 @@ class TestCaching:
             audio_path = f.name
 
         try:
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 engine.process_voice_input(audio_path, use_cache=False)
             )
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 engine.process_voice_input(audio_path, use_cache=False)
             )
 
@@ -363,7 +363,7 @@ class TestGenerateResponse:
 
         engine = _create_engine(llm_mock=llm_mock)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             engine.generate_response("<utterance>Hello</utterance>")
         )
 
@@ -381,7 +381,7 @@ class TestGenerateResponse:
 
         engine = _create_engine(llm_mock=llm_mock)
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             engine.generate_response("<iml/>", context="Support scenario")
         )
 
@@ -398,7 +398,7 @@ class TestGenerateResponse:
 
         engine = _create_engine(llm_mock=llm_mock)
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             engine.generate_response("<iml/>", tone="empathetic")
         )
 
@@ -412,7 +412,7 @@ class TestGenerateResponse:
         engine = _create_engine(llm_mock=llm_mock)
 
         with pytest.raises(LLMError, match="LLM interpretation failed"):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 engine.generate_response("<iml/>")
             )
 
@@ -431,7 +431,7 @@ class TestSynthesizeSpeech:
 
         engine = _create_engine(tts_mock=tts_mock)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             engine.synthesize_speech("Hello world", emotion="joyful")
         )
 
@@ -449,7 +449,7 @@ class TestSynthesizeSpeech:
 
         engine = _create_engine(tts_mock=tts_mock)
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             engine.synthesize_speech("Test", emotion="sad")
         )
 
@@ -463,7 +463,7 @@ class TestSynthesizeSpeech:
         engine = _create_engine(tts_mock=tts_mock)
 
         with pytest.raises(TTSError, match="TTS synthesis failed"):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 engine.synthesize_speech("Hello")
             )
 

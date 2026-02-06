@@ -116,43 +116,39 @@ def create_app(
         prosodic features.  The IML is validated by
         ``prosody_protocol.IMLValidator`` before being returned.
         """
-        with tempfile.NamedTemporaryFile(
-            suffix=_suffix_from_filename(audio.filename),
-            delete=False,
-        ) as tmp:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            suffix = _suffix_from_filename(audio.filename)
+            tmp_path = str(Path(tmp_dir) / f"upload{suffix}")
             contents = await audio.read()
-            tmp.write(contents)
-            tmp_path = tmp.name
+            Path(tmp_path).write_bytes(contents)
 
-        try:
-            result = await engine.process_voice_input(tmp_path)
+            try:
+                result = await engine.process_voice_input(tmp_path)
 
-            features = []
-            for feat in result.prosody_features:
-                feat_dict: dict[str, Any] = {
-                    "start_ms": getattr(feat, "start_ms", 0),
-                    "end_ms": getattr(feat, "end_ms", 0),
-                    "text": getattr(feat, "text", ""),
-                }
-                if getattr(feat, "f0_mean", None) is not None:
-                    feat_dict["f0_mean"] = feat.f0_mean
-                if getattr(feat, "speech_rate", None) is not None:
-                    feat_dict["speech_rate"] = feat.speech_rate
-                features.append(feat_dict)
+                features = []
+                for feat in result.prosody_features:
+                    feat_dict: dict[str, Any] = {
+                        "start_ms": getattr(feat, "start_ms", 0),
+                        "end_ms": getattr(feat, "end_ms", 0),
+                        "text": getattr(feat, "text", ""),
+                    }
+                    if getattr(feat, "f0_mean", None) is not None:
+                        feat_dict["f0_mean"] = feat.f0_mean
+                    if getattr(feat, "speech_rate", None) is not None:
+                        feat_dict["speech_rate"] = feat.speech_rate
+                    features.append(feat_dict)
 
-            return ProcessResponse(
-                text=result.text,
-                emotion=result.emotion,
-                confidence=result.confidence,
-                iml=result.iml,
-                suggested_tone=result.suggested_tone,
-                prosody_features=features,
-            )
-        except Exception as exc:
-            logger.exception("Error processing audio")
-            raise HTTPException(status_code=500, detail=str(exc))
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
+                return ProcessResponse(
+                    text=result.text,
+                    emotion=result.emotion,
+                    confidence=result.confidence,
+                    iml=result.iml,
+                    suggested_tone=result.suggested_tone,
+                    prosody_features=features,
+                )
+            except Exception as exc:
+                logger.exception("Error processing audio")
+                raise HTTPException(status_code=500, detail=str(exc))
 
     @api.post("/generate", response_model=GenerateResponse)
     async def generate_response(req: GenerateRequest) -> GenerateResponse:

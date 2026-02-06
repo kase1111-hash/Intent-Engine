@@ -59,7 +59,7 @@ class TestDeepgramSTTTranscribe:
         with patch.dict(sys.modules, {"deepgram": None}), pytest.raises(
             ImportError, match="deepgram-sdk is required"
         ):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 stt.transcribe("/some/audio.wav")
             )
 

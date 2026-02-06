@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -121,8 +122,7 @@ class IntentEngine:
 
         # LRU cache for audio processing results
         self._cache_size = cache_size
-        self._cache: dict[str, Result] = {}
-        self._cache_order: list[str] = []
+        self._cache: OrderedDict[str, Result] = OrderedDict()
 
         logger.info(
             "IntentEngine initialized (stt=%s, llm=%s, tts=%s, filter=%s, profile=%s)",
@@ -136,21 +136,17 @@ class IntentEngine:
     def _cache_get(self, key: str) -> Result | None:
         """Retrieve a cached result by key."""
         if key in self._cache:
-            # Move to end (most recently used)
-            self._cache_order.remove(key)
-            self._cache_order.append(key)
+            self._cache.move_to_end(key)
             return self._cache[key]
         return None
 
     def _cache_put(self, key: str, result: Result) -> None:
         """Store a result in the cache, evicting the oldest if full."""
         if key in self._cache:
-            self._cache_order.remove(key)
+            self._cache.move_to_end(key)
         elif len(self._cache) >= self._cache_size:
-            oldest = self._cache_order.pop(0)
-            del self._cache[oldest]
+            self._cache.popitem(last=False)
         self._cache[key] = result
-        self._cache_order.append(key)
 
     @staticmethod
     def _audio_hash(audio_path: str) -> str:
@@ -195,6 +191,13 @@ class IntentEngine:
         IntentEngineError
             If IML validation fails.
         """
+        # Validate audio path
+        audio = Path(audio_path)
+        if not audio.exists():
+            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+        if not audio.is_file():
+            raise ValueError(f"Audio path is not a file: {audio_path}")
+
         # Check cache
         if use_cache:
             cache_key = self._audio_hash(audio_path)
@@ -217,7 +220,7 @@ class IntentEngine:
                 audio_path, transcription.alignments
             )
             pauses = self._analyzer.detect_pauses(audio_path)
-        except Exception:
+        except (RuntimeError, OSError, ValueError):
             logger.warning(
                 "Prosody analysis failed for '%s'; falling back to text-only IML",
                 audio_path,
@@ -257,7 +260,7 @@ class IntentEngine:
                 emotion, confidence = self._profile_applier.apply(
                     self._profile, feat_dict, emotion, confidence
                 )
-            except Exception:
+            except (RuntimeError, KeyError, ValueError):
                 logger.warning(
                     "Prosody profile application failed; using base classification",
                     exc_info=True,
@@ -502,20 +505,22 @@ class IntentEngine:
         Audio
             Synthesized speech audio.
         """
-        from prosody_protocol import TextToIML
+        from prosody_protocol import IMLToSSML, TextToIML
 
         predictor = TextToIML()
-        predictor.predict(text, context=emotion)
+        iml_doc = predictor.predict(text, context=emotion)
 
-        return await self.synthesize_speech(text, emotion=emotion)
+        # Convert the predicted IML to SSML for richer synthesis if possible
+        ssml_converter = IMLToSSML()
+        ssml_text = ssml_converter.convert(iml_doc)
+
+        return await self.synthesize_speech(ssml_text or text, emotion=emotion)
 
     def type_to_speech_sync(
         self, text: str, emotion: str = "neutral"
     ) -> Audio:
         """Synchronous wrapper for :meth:`type_to_speech`."""
-        return asyncio.get_event_loop().run_until_complete(
-            self.type_to_speech(text, emotion=emotion)
-        )
+        return asyncio.run(self.type_to_speech(text, emotion=emotion))
 
     # -- Profile management API --
 
@@ -617,7 +622,7 @@ class IntentEngine:
         self, audio_path: str, use_cache: bool = True
     ) -> Result:
         """Synchronous wrapper for :meth:`process_voice_input`."""
-        return asyncio.get_event_loop().run_until_complete(
+        return asyncio.run(
             self.process_voice_input(audio_path, use_cache=use_cache)
         )
 
@@ -628,7 +633,7 @@ class IntentEngine:
         tone: str | None = None,
     ) -> Response:
         """Synchronous wrapper for :meth:`generate_response`."""
-        return asyncio.get_event_loop().run_until_complete(
+        return asyncio.run(
             self.generate_response(iml, context=context, tone=tone)
         )
 
@@ -636,6 +641,4 @@ class IntentEngine:
         self, text: str, emotion: str = "neutral"
     ) -> Audio:
         """Synchronous wrapper for :meth:`synthesize_speech`."""
-        return asyncio.get_event_loop().run_until_complete(
-            self.synthesize_speech(text, emotion=emotion)
-        )
+        return asyncio.run(self.synthesize_speech(text, emotion=emotion))

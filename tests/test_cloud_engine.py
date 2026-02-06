@@ -94,7 +94,7 @@ class TestRequestRetries:
         engine._session = mock_session
 
         with pytest.raises(IntentEngineError, match="Invalid API key"):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 engine._request("POST", "/test", json_data={})
             )
 
@@ -108,7 +108,7 @@ class TestRequestRetries:
         engine._session = mock_session
 
         with pytest.raises(IntentEngineError, match="Forbidden"):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 engine._request("POST", "/test", json_data={})
             )
 
@@ -121,7 +121,7 @@ class TestRequestRetries:
         mock_session.post = AsyncMock(return_value=mock_resp)
         engine._session = mock_session
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             engine._request("POST", "/test", json_data={})
         )
         assert result == {"ok": True}
@@ -143,7 +143,7 @@ class TestRequestRetries:
         mock_session.post = AsyncMock(side_effect=[resp_500, resp_500, resp_200])
         engine._session = mock_session
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             engine._request("POST", "/test", json_data={})
         )
         assert result == {"recovered": True}
@@ -162,7 +162,7 @@ class TestRequestRetries:
         engine._session = mock_session
 
         with pytest.raises(IntentEngineError, match="Server error 500"):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 engine._request("POST", "/test", json_data={})
             )
 
@@ -195,7 +195,7 @@ class TestCloudProcessVoiceInput:
             audio_path = f.name
 
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 engine.process_voice_input(audio_path)
             )
             assert isinstance(result, Result)
@@ -217,7 +217,7 @@ class TestCloudProcessVoiceInput:
 
         try:
             with pytest.raises(STTError, match="Cloud processing failed"):
-                asyncio.get_event_loop().run_until_complete(
+                asyncio.run(
                     engine.process_voice_input(audio_path)
                 )
         finally:
@@ -236,7 +236,7 @@ class TestCloudGenerateResponse:
             "emotion": "joyful",
         })
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             engine.generate_response("<utterance>Hello</utterance>")
         )
         assert isinstance(result, Response)
@@ -249,7 +249,7 @@ class TestCloudGenerateResponse:
             "text": "ok", "emotion": "neutral"
         })
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             engine.generate_response("<iml/>", context="Support", tone="empathetic")
         )
 
@@ -263,7 +263,7 @@ class TestCloudGenerateResponse:
         engine._request = AsyncMock(side_effect=RuntimeError("API error"))
 
         with pytest.raises(LLMError, match="Cloud generation failed"):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 engine.generate_response("<iml/>")
             )
 
@@ -282,7 +282,7 @@ class TestCloudSynthesizeSpeech:
             "duration": 1.5,
         })
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             engine.synthesize_speech("Hello", emotion="joyful")
         )
         assert isinstance(result, Audio)
@@ -297,7 +297,7 @@ class TestCloudSynthesizeSpeech:
             "audio_data": base64.b64encode(b"data").decode(),
         })
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             engine.synthesize_speech("Test", emotion="sad")
         )
 
@@ -310,7 +310,7 @@ class TestCloudSynthesizeSpeech:
         engine._request = AsyncMock(side_effect=RuntimeError("TTS down"))
 
         with pytest.raises(TTSError, match="Cloud synthesis failed"):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 engine.synthesize_speech("Hello")
             )
 
@@ -325,11 +325,11 @@ class TestCloudClose:
         mock_session.aclose = AsyncMock()
         engine._session = mock_session
 
-        asyncio.get_event_loop().run_until_complete(engine.close())
+        asyncio.run(engine.close())
         mock_session.aclose.assert_called_once()
         assert engine._session is None
 
     def test_close_no_session(self) -> None:
         engine = CloudEngine(api_key="ie_sk_test")
         # Should not raise
-        asyncio.get_event_loop().run_until_complete(engine.close())
+        asyncio.run(engine.close())

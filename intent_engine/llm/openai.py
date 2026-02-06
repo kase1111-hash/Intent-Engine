@@ -50,6 +50,15 @@ class OpenAILLM(LLMProvider):
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature
+        self._client: object | None = None
+
+    def _get_client(self) -> object:
+        """Return a reusable async client, creating it on first call."""
+        if self._client is None:
+            from openai import AsyncOpenAI  # type: ignore[import-untyped]
+
+            self._client = AsyncOpenAI(api_key=self._api_key)
+        return self._client
 
     async def interpret(
         self, iml_input: str, context: str | None = None
@@ -69,7 +78,7 @@ class OpenAILLM(LLMProvider):
             The parsed intent, response text, and suggested emotion.
         """
         try:
-            from openai import AsyncOpenAI  # type: ignore[import-untyped]
+            client = self._get_client()
         except ImportError as exc:
             raise ImportError(
                 "openai is required for OpenAILLM. "
@@ -80,9 +89,7 @@ class OpenAILLM(LLMProvider):
         if context:
             system = f"{system}\n\n## Additional Context\n{context}"
 
-        client = AsyncOpenAI(api_key=self._api_key)
-
-        response = await client.chat.completions.create(
+        response = await client.chat.completions.create(  # type: ignore[union-attr]
             model=self._model,
             max_tokens=self._max_tokens,
             temperature=self._temperature,
@@ -94,7 +101,15 @@ class OpenAILLM(LLMProvider):
         )
 
         raw_text = response.choices[0].message.content or ""
-        parsed = json.loads(raw_text)
+
+        try:
+            parsed = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            from intent_engine.errors import LLMError
+
+            raise LLMError(
+                f"OpenAI returned non-JSON response: {raw_text[:200]}"
+            ) from exc
 
         logger.info(
             "OpenAI interpreted intent=%s emotion=%s (model=%s)",

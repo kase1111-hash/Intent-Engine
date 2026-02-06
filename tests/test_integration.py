@@ -71,7 +71,7 @@ class TestSTTProsodyIntegration:
             path = f.name
 
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 engine.process_voice_input(path)
             )
             assert result.text == "I'm really upset"
@@ -101,7 +101,7 @@ class TestSTTProsodyIntegration:
             path = f.name
 
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 engine.process_voice_input(path)
             )
             assert result.text == "Hello"
@@ -122,7 +122,7 @@ class TestLLMResponseIntegration:
             )
         )
 
-        response = asyncio.get_event_loop().run_until_complete(
+        response = asyncio.run(
             engine.generate_response("<utterance>Cancel my order</utterance>")
         )
         assert isinstance(response, Response)
@@ -135,7 +135,7 @@ class TestLLMResponseIntegration:
             return_value=make_interpretation_result()
         )
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             engine.generate_response("<iml/>", context="Support", tone="calm")
         )
 
@@ -152,7 +152,7 @@ class TestTTSIntegration:
         engine = create_mocked_engine()
         engine._tts.synthesize = AsyncMock(return_value=make_synthesis_result())
 
-        audio = asyncio.get_event_loop().run_until_complete(
+        audio = asyncio.run(
             engine.synthesize_speech("Hello", emotion="joyful")
         )
         assert isinstance(audio, Audio)
@@ -163,7 +163,7 @@ class TestTTSIntegration:
         engine = create_mocked_engine()
         engine._tts.synthesize = AsyncMock(return_value=make_synthesis_result())
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             engine.synthesize_speech("Test", emotion="angry")
         )
         call_kwargs = engine._tts.synthesize.call_args
@@ -249,13 +249,13 @@ class TestCacheIntegration:
 
         try:
             # First call processes
-            r1 = asyncio.get_event_loop().run_until_complete(
+            r1 = asyncio.run(
                 engine.process_voice_input(path)
             )
             assert engine._stt.transcribe.call_count == 1
 
             # Second call hits cache
-            r2 = asyncio.get_event_loop().run_until_complete(
+            r2 = asyncio.run(
                 engine.process_voice_input(path)
             )
             assert engine._stt.transcribe.call_count == 1  # not called again

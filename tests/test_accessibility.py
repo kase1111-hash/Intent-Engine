@@ -173,7 +173,7 @@ class TestTypeToSpeech:
             )
         )
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             engine.type_to_speech("Hello world", emotion="joyful")
         )
         assert isinstance(result, Audio)
@@ -188,7 +188,7 @@ class TestTypeToSpeech:
             )
         )
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             engine.type_to_speech("Test", emotion="sad")
         )
 
@@ -204,7 +204,7 @@ class TestTypeToSpeech:
             )
         )
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             engine.type_to_speech("Test")
         )
 

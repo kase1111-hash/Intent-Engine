@@ -229,7 +229,7 @@ class TestLocalEnginePipeline:
             audio_path = f.name
 
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 engine.process_voice_input(audio_path)
             )
             assert isinstance(result, Result)
@@ -247,7 +247,7 @@ class TestLocalEnginePipeline:
 
         engine = _create_local(llm_mock=llm_mock)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             engine.generate_response("<utterance>Hello</utterance>")
         )
         assert isinstance(result, Response)
@@ -263,7 +263,7 @@ class TestLocalEnginePipeline:
 
         engine = _create_local(tts_mock=tts_mock)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             engine.synthesize_speech("Hello", emotion="joyful")
         )
         assert isinstance(result, Audio)

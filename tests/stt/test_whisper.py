@@ -82,7 +82,7 @@ class TestWhisperSTTTranscribe:
                 f.write(b"fake audio data")
                 audio_path = f.name
 
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 stt.transcribe(audio_path)
             )
             Path(audio_path).unlink()
@@ -105,7 +105,7 @@ class TestWhisperSTTTranscribe:
                 f.write(b"fake audio data")
                 audio_path = f.name
 
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 stt.transcribe(audio_path)
             )
             Path(audio_path).unlink()
@@ -137,7 +137,7 @@ class TestWhisperSTTTranscribe:
                 f.write(b"fake audio data")
                 audio_path = f.name
 
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 stt.transcribe(audio_path)
             )
             Path(audio_path).unlink()
@@ -150,7 +150,7 @@ class TestWhisperSTTTranscribe:
     def test_file_not_found_raises(self) -> None:
         stt = WhisperSTT()
         with pytest.raises(FileNotFoundError, match="Audio file not found"):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 stt.transcribe("/nonexistent/audio.wav")
             )
 
@@ -170,7 +170,7 @@ class TestWhisperSTTTranscribe:
                 f.write(b"fake audio data")
                 audio_path = f.name
 
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 stt.transcribe(audio_path)
             )
             Path(audio_path).unlink()
@@ -204,7 +204,7 @@ class TestWhisperSTTTranscribe:
                 f.write(b"fake audio data")
                 audio_path = f.name
 
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 stt.transcribe(audio_path)
             )
             Path(audio_path).unlink()

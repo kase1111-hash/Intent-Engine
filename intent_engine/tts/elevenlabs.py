@@ -9,6 +9,8 @@ Requires an ``ELEVENLABS_API_KEY`` environment variable or explicit
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import os
 
@@ -75,6 +77,7 @@ class ElevenLabsTTS(TTSProvider):
         self._voice_id = voice_id
         self._model_id = model_id
         self._output_format = output_format
+        self._client: object | None = None
 
     async def synthesize(
         self, text: str, emotion: str = "neutral", **kwargs: object
@@ -93,31 +96,38 @@ class ElevenLabsTTS(TTSProvider):
         SynthesisResult
             Synthesized audio bytes and metadata.
         """
-        try:
-            from elevenlabs import ElevenLabs as ElevenLabsClient  # type: ignore[import-untyped]
-        except ImportError as exc:
-            raise ImportError(
-                "elevenlabs is required for ElevenLabsTTS. "
-                "Install it with: pip install intent-engine[elevenlabs]"
-            ) from exc
+        if self._client is None:
+            try:
+                from elevenlabs import ElevenLabs as ElevenLabsClient  # type: ignore[import-untyped]
+            except ImportError as exc:
+                raise ImportError(
+                    "elevenlabs is required for ElevenLabsTTS. "
+                    "Install it with: pip install intent-engine[elevenlabs]"
+                ) from exc
+            self._client = ElevenLabsClient(api_key=self._api_key)
 
         settings = ELEVENLABS_EMOTION_SETTINGS.get(
             emotion, ELEVENLABS_EMOTION_SETTINGS["neutral"]
         )
 
-        client = ElevenLabsClient(api_key=self._api_key)
-
-        audio_iterator = client.text_to_speech.convert(
-            voice_id=self._voice_id,
-            text=text,
-            model_id=self._model_id,
-            output_format=self._output_format,
-            voice_settings={
-                "stability": settings["stability"],
-                "similarity_boost": settings["similarity_boost"],
-                "style": settings["style"],
-                "use_speaker_boost": True,
-            },
+        # Run the synchronous ElevenLabs client in a thread executor
+        # to avoid blocking the event loop.
+        loop = asyncio.get_running_loop()
+        audio_iterator = await loop.run_in_executor(
+            None,
+            functools.partial(
+                self._client.text_to_speech.convert,  # type: ignore[union-attr]
+                voice_id=self._voice_id,
+                text=text,
+                model_id=self._model_id,
+                output_format=self._output_format,
+                voice_settings={
+                    "stability": settings["stability"],
+                    "similarity_boost": settings["similarity_boost"],
+                    "style": settings["style"],
+                    "use_speaker_boost": True,
+                },
+            ),
         )
 
         # Collect streamed audio chunks into a single bytes object

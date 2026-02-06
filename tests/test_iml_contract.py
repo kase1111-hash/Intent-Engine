@@ -146,7 +146,7 @@ class TestProcessVoiceInputIMLContract:
             path = f.name
 
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 engine.process_voice_input(path)
             )
             assert_valid_iml(result.iml)
@@ -168,7 +168,7 @@ class TestProcessVoiceInputIMLContract:
             path = f.name
 
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 engine.process_voice_input(path)
             )
             assert_valid_iml(result.iml)
@@ -185,7 +185,7 @@ class TestProcessVoiceInputIMLContract:
             path = f.name
 
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 engine.process_voice_input(path)
             )
             assert_valid_iml(result.iml)

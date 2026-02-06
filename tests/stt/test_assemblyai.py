@@ -57,7 +57,7 @@ class TestAssemblyAISTTTranscribe:
         with patch.dict(sys.modules, {"assemblyai": None}), pytest.raises(
             ImportError, match="assemblyai is required"
         ):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 stt.transcribe("/some/audio.wav")
             )
 

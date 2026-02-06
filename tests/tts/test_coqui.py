@@ -66,7 +66,7 @@ class TestCoquiTTSSynthesize:
         tts = CoquiTTS()
         tts._tts = mock_tts_instance
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             tts.synthesize("Hello world", emotion="calm")
         )
 
@@ -84,7 +84,7 @@ class TestCoquiTTSSynthesize:
         tts = CoquiTTS()
         tts._tts = mock_tts_instance
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             tts.synthesize("Fast speech", emotion="angry")
         )
 
@@ -99,7 +99,7 @@ class TestCoquiTTSSynthesize:
         tts = CoquiTTS(speaker="p225", language="en")
         tts._tts = mock_tts_instance
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             tts.synthesize("Test")
         )
 
@@ -114,7 +114,7 @@ class TestCoquiTTSSynthesize:
         tts = CoquiTTS()
         tts._tts = mock_tts_instance
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             tts.synthesize("Hello")
         )
 

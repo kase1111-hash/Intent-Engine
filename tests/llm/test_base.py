@@ -66,7 +66,7 @@ class TestLLMProviderInterface:
         llm = ConcreteLLM()
         assert isinstance(llm, LLMProvider)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             llm.interpret("<utterance>hello</utterance>")
         )
         assert isinstance(result, InterpretationResult)

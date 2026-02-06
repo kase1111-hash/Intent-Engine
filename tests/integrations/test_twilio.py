@@ -115,7 +115,7 @@ class TestHandleVoice:
         download = AsyncMock(return_value=b"RIFF fake audio")
         handler = TwilioVoiceHandler(engine, download_func=download)
 
-        twiml = asyncio.get_event_loop().run_until_complete(
+        twiml = asyncio.run(
             handler.handle_voice("https://api.twilio.com/recording.wav")
         )
 
@@ -134,7 +134,7 @@ class TestHandleVoice:
         callback = lambda r: "Custom response text"
         handler = TwilioVoiceHandler(engine, response_callback=callback, download_func=download)
 
-        twiml = asyncio.get_event_loop().run_until_complete(
+        twiml = asyncio.run(
             handler.handle_voice("https://twilio.com/rec.wav")
         )
 
@@ -153,7 +153,7 @@ class TestHandleVoice:
         download = AsyncMock(return_value=b"RIFF fake")
         handler = TwilioVoiceHandler(engine, download_func=download)
 
-        twiml = asyncio.get_event_loop().run_until_complete(
+        twiml = asyncio.run(
             handler.handle_voice("https://twilio.com/rec.wav")
         )
 
@@ -169,7 +169,7 @@ class TestHandleVoice:
         download = AsyncMock(return_value=b"RIFF fake")
         handler = TwilioVoiceHandler(engine, download_func=download)
 
-        twiml = asyncio.get_event_loop().run_until_complete(
+        twiml = asyncio.run(
             handler.handle_voice("https://twilio.com/rec.wav")
         )
 
@@ -187,7 +187,7 @@ class TestHandleVoice:
         handler = TwilioVoiceHandler(engine, download_func=download)
 
         # Should not raise even with form_data
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             handler.handle_voice(
                 "https://twilio.com/rec.wav",
                 form_data={"CallSid": "CA123", "From": "+15551234567"},

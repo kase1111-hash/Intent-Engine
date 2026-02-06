@@ -60,13 +60,12 @@ def _setup_fast_pipeline(engine):
 
 def _measure_async(coro_factory, iterations=10):
     """Measure average wall-clock time of an async operation."""
-    loop = asyncio.get_event_loop()
     # Warm up
-    loop.run_until_complete(coro_factory())
+    asyncio.run(coro_factory())
 
     start = time.perf_counter()
     for _ in range(iterations):
-        loop.run_until_complete(coro_factory())
+        asyncio.run(coro_factory())
     elapsed = time.perf_counter() - start
     return elapsed / iterations
 
@@ -120,14 +119,13 @@ class TestProcessVoiceInputPerformance:
             path = f.name
 
         try:
-            loop = asyncio.get_event_loop()
             # Prime cache
-            loop.run_until_complete(engine.process_voice_input(path))
+            asyncio.run(engine.process_voice_input(path))
 
             # Measure cache hit
             start = time.perf_counter()
             for _ in range(50):
-                loop.run_until_complete(engine.process_voice_input(path))
+                asyncio.run(engine.process_voice_input(path))
             cache_time = (time.perf_counter() - start) / 50
 
             # Cache hits should be very fast
@@ -291,12 +289,11 @@ class TestThroughput:
         """At least 100 generate_response calls/sec with mocks."""
         engine = create_mocked_engine()
         _setup_fast_pipeline(engine)
-        loop = asyncio.get_event_loop()
 
         count = 100
         start = time.perf_counter()
         for _ in range(count):
-            loop.run_until_complete(engine.generate_response("<iml/>"))
+            asyncio.run(engine.generate_response("<iml/>"))
         elapsed = time.perf_counter() - start
 
         throughput = count / elapsed

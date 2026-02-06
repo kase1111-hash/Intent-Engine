@@ -50,6 +50,15 @@ class ClaudeLLM(LLMProvider):
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature
+        self._client: object | None = None
+
+    def _get_client(self) -> object:
+        """Return a reusable async client, creating it on first call."""
+        if self._client is None:
+            import anthropic  # type: ignore[import-untyped]
+
+            self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
+        return self._client
 
     async def interpret(
         self, iml_input: str, context: str | None = None
@@ -69,7 +78,7 @@ class ClaudeLLM(LLMProvider):
             The parsed intent, response text, and suggested emotion.
         """
         try:
-            import anthropic  # type: ignore[import-untyped]
+            self._get_client()
         except ImportError as exc:
             raise ImportError(
                 "anthropic is required for ClaudeLLM. "
@@ -80,9 +89,9 @@ class ClaudeLLM(LLMProvider):
         if context:
             system = f"{system}\n\n## Additional Context\n{context}"
 
-        client = anthropic.AsyncAnthropic(api_key=self._api_key)
+        client = self._get_client()
 
-        response = await client.messages.create(
+        response = await client.messages.create(  # type: ignore[union-attr]
             model=self._model,
             max_tokens=self._max_tokens,
             temperature=self._temperature,
@@ -91,7 +100,15 @@ class ClaudeLLM(LLMProvider):
         )
 
         raw_text = response.content[0].text
-        parsed = json.loads(raw_text)
+
+        try:
+            parsed = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            from intent_engine.errors import LLMError
+
+            raise LLMError(
+                f"Claude returned non-JSON response: {raw_text[:200]}"
+            ) from exc
 
         logger.info(
             "Claude interpreted intent=%s emotion=%s (model=%s)",
