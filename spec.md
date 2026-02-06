@@ -82,15 +82,24 @@ Audio Output
 
 ## 3. Intent Markup Language (IML)
 
-IML is an XML-based markup language that carries prosodic information through the pipeline.
+IML is an XML-based markup language that carries prosodic information through the pipeline. The IML specification, XML Schema (XSD), parser, validator, and data models are defined and maintained by the **[Prosody Protocol](https://github.com/kase1111-hash/Prosody-Protocol)** project. Intent Engine consumes IML via the `prosody_protocol` SDK and does not maintain its own IML implementation.
+
+**Canonical references:**
+- IML XSD Schema: `schemas/iml-1.0.xsd` in the Prosody Protocol repo
+- Parser: `prosody_protocol.IMLParser`
+- Validator: `prosody_protocol.IMLValidator` (rules V1-V18)
+- Data models: `prosody_protocol.models` (`IMLDocument`, `Utterance`, `Prosody`, `Pause`, `Emphasis`, `Segment`)
 
 ### 3.1 Elements
 
 | Element | Purpose | Attributes |
 |---|---|---|
-| `<utterance>` | Wraps a full spoken turn | `emotion`, `confidence` |
-| `<prosody>` | Marks prosodic features on a span | `pitch`, `pitch_contour`, `rate`, `volume` |
+| `<iml>` | Root wrapper for multi-utterance documents | `version`, `language`, `consent`, `processing` |
+| `<utterance>` | Wraps a full spoken turn | `emotion`, `confidence`, `speaker_id` |
+| `<prosody>` | Marks prosodic features on a span | `pitch`, `pitch_contour`, `volume`, `rate`, `quality` + extended attrs |
+| `<pause>` | Explicit timing gap | `duration` (ms, required, positive integer) |
 | `<emphasis>` | Marks stressed words | `level` (strong, moderate, reduced) |
+| `<segment>` | Clause-level prosodic grouping | `tempo`, `rhythm` (direct child of `<utterance>` only) |
 
 ### 3.2 Example
 
@@ -103,28 +112,55 @@ IML is an XML-based markup language that carries prosodic information through th
 
 ### 3.3 Prosodic Features Captured
 
-| Feature | Description | Value Type |
+**Core attributes (on `<prosody>`):**
+
+| Attribute | Description | Value Format |
 |---|---|---|
-| `pitch` | Fundamental frequency shift | Percentage (e.g., `+10%`) |
-| `pitch_contour` | Pitch trajectory pattern | Enum: `rise`, `fall`, `fall-rise`, `rise-fall` |
-| `pitch_variance` | Variation in pitch | Enum: `low`, `normal`, `high`, `reduced` |
-| `volume` | Loudness relative to baseline | dB offset (e.g., `+6dB`) |
-| `speaking_rate` | Words per minute relative | Float (1.0 = normal) |
-| `pauses` | Pause frequency and duration | Enum: `normal`, `increased`, `decreased` |
+| `pitch` | Fundamental frequency shift | `+N%`, `-N%`, `+Nst`, `-Nst`, or `NHz` |
+| `pitch_contour` | Pitch trajectory pattern | `rise`, `fall`, `rise-fall`, `fall-rise`, `fall-sharp`, `rise-sharp`, `flat` |
+| `volume` | Loudness relative to baseline | `+NdB`, `-NdB` |
+| `rate` | Speaking rate | `fast`, `slow`, `medium`, or `N%` |
+| `quality` | Voice quality | `modal`, `breathy`, `tense`, `creaky`, `whispery`, `harsh` |
+
+**Extended attributes (on `<prosody>`, for research use):**
+
+| Attribute | Type | Description |
+|---|---|---|
+| `f0_mean` | float | Mean fundamental frequency (Hz) |
+| `f0_range` | string | Pitch range, e.g., `"120-240"` |
+| `f0_contour` | string | Comma-separated Hz values |
+| `intensity_mean` | float | Mean intensity (dB) |
+| `intensity_range` | float | Dynamic range (dB) |
+| `speech_rate` | float | Syllables per second |
+| `duration_ms` | int | Span duration in milliseconds |
+| `jitter` | float | Voice quality measure |
+| `shimmer` | float | Voice quality measure |
+| `hnr` | float | Harmonics-to-noise ratio (dB) |
+
+**Utterance-level attributes:**
+
+| Attribute | Description | Value Type |
+|---|---|---|
 | `emotion` | Classified emotional state | String (see Section 3.4) |
-| `confidence` | Emotion classification confidence | Float 0.0-1.0 |
+| `confidence` | Emotion classification confidence (REQUIRED when emotion is set) | Float 0.0-1.0 |
+| `speaker_id` | Speaker identifier | String |
 
 ### 3.4 Supported Emotions
 
-**Core set (v0.8):**
-- `calm`, `confident`, `deliberate`
-- `frustrated`, `angry`, `sarcastic`
-- `happy`, `enthusiastic`, `excited`
-- `sad`, `stressed`, `overwhelmed`
-- `uncertain`, `hesitant`, `rushed`
-- `empathetic`, `neutral`
+**Prosody Protocol core vocabulary (used for validation):**
+- `neutral`, `sincere`, `sarcastic`
+- `frustrated`, `joyful`, `uncertain`
+- `angry`, `sad`, `fearful`
+- `surprised`, `disgusted`
+- `calm`, `empathetic`
 
-**Planned (v1.0):** 20+ fine-grained emotions.
+**Intent Engine extended vocabulary (custom, triggers V15 info notice):**
+- `confident`, `deliberate`
+- `happy`, `enthusiastic`, `excited`
+- `stressed`, `overwhelmed`
+- `hesitant`, `rushed`
+
+**Planned (v1.0):** 20+ fine-grained emotions with standardization across both projects.
 
 ---
 
@@ -428,7 +464,26 @@ Support for users whose prosody does not follow neurotypical patterns (autism, s
 
 ## 13. Dependencies
 
-### 13.1 External Services / SDKs
+### 13.1 Core Dependency: Prosody Protocol
+
+| Package | Import | Repository | Purpose |
+|---|---|---|---|
+| `prosody-protocol` | `prosody_protocol` | [kase1111-hash/Prosody-Protocol](https://github.com/kase1111-hash/Prosody-Protocol) | IML specification, parser, validator, prosody analysis, emotion classification, accessibility profiles, datasets, benchmarking |
+
+This is a **required** dependency. Intent Engine uses the Prosody Protocol SDK for all IML handling, prosody analysis, and emotion classification. See CLAUDE.md for the full compatibility contract.
+
+Key classes consumed by Intent Engine:
+- `IMLParser`, `IMLValidator`, `IMLAssembler` -- IML document lifecycle
+- `IMLDocument`, `Utterance`, `Prosody`, `Pause`, `Emphasis`, `Segment` -- Data models
+- `ProsodyAnalyzer`, `SpanFeatures`, `WordAlignment`, `PauseInterval` -- Audio analysis
+- `EmotionClassifier`, `RuleBasedEmotionClassifier` -- Emotion classification
+- `IMLToSSML` -- TTS format conversion
+- `ProfileLoader`, `ProfileApplier`, `ProsodyProfile` -- Accessibility
+- `DatasetLoader`, `DatasetEntry` -- Training data
+- `Benchmark`, `BenchmarkReport` -- Evaluation
+- `AudioToIML`, `TextToIML`, `IMLToAudio` -- End-to-end converters
+
+### 13.2 External Services / SDKs
 
 | Dependency | Purpose |
 |---|---|
@@ -441,12 +496,12 @@ Support for users whose prosody does not follow neurotypical patterns (autism, s
 | eSpeak | Open-source TTS |
 | Twilio SDK | Telephony integration |
 
-### 13.2 Related Projects
+### 13.3 Related Projects
 
 | Project | Relationship |
 |---|---|
-| [Prosody Protocol](https://github.com/yourusername/prosody-protocol) | IML specification and training datasets |
-| [Mavis](https://github.com/yourusername/mavis) | Generates prosody training data |
+| [Prosody Protocol](https://github.com/kase1111-hash/Prosody-Protocol) | IML specification, SDK, and training datasets (core dependency) |
+| [Mavis](https://github.com/yourusername/mavis) | Generates prosody training data via the Prosody Protocol's MavisBridge |
 
 ---
 

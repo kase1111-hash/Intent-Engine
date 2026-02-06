@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "intent-engine"
+version = "0.8.0"
+description = "Prosody-aware AI system that preserves and interprets emotional intent in voice conversations."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Kase Branham" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "prosody-protocol>=0.1.0a1",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+whisper = ["openai-whisper>=20230918", "prosody-protocol[audio]"]
+deepgram = ["deepgram-sdk>=3.0"]
+assemblyai = ["assemblyai>=0.20"]
+claude = ["anthropic>=0.30"]
+openai = ["openai>=1.0"]
+local-llm = ["llama-cpp-python>=0.2"]
+elevenlabs = ["elevenlabs>=0.2"]
+coqui = ["TTS>=0.20"]
+espeak = ["pyttsx3>=2.90"]
+integrations = ["fastapi>=0.100", "uvicorn>=0.23"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-asyncio>=0.21",
+    "ruff>=0.1",
+    "mypy>=1.5",
+    "pre-commit>=3.0",
+]
+all = [
+    "intent-engine[whisper,deepgram,assemblyai,claude,openai,local-llm,elevenlabs,coqui,espeak,integrations,dev]",
+]
+
+[project.urls]
+Repository = "https://github.com/kase1111-hash/Intent-Engine"
+Issues = "https://github.com/kase1111-hash/Intent-Engine/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers -v"
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true

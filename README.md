@@ -95,7 +95,7 @@ Customer: [finally feels heard]
 
 ### Powered By
 
-- **[Prosody Protocol](https://github.com/yourusername/prosody-protocol)** - IML specification and training datasets
+- **[Prosody Protocol](https://github.com/kase1111-hash/Prosody-Protocol)** - IML specification, SDK, and training datasets
 - **[Mavis](https://github.com/yourusername/mavis)** - Generates prosody training data
 - **Constitutional AI Principles** - Verifies genuine user intent before actions
 
@@ -165,6 +165,8 @@ Works with:
 ```bash
 pip install intent-engine
 ```
+
+This installs [Prosody Protocol](https://github.com/kase1111-hash/Prosody-Protocol) (`prosody-protocol`) as a core dependency, which provides IML parsing, validation, prosody analysis, and emotion classification.
 
 ### Basic Usage
 
@@ -417,7 +419,7 @@ response = llm.chat(
 
 **Fine-tuning (Advanced):**
 ```python
-# Train on prosody-protocol dataset
+# Train on Prosody Protocol dataset (https://github.com/kase1111-hash/Prosody-Protocol)
 from intent_engine.training import FineTuner
 
 trainer = FineTuner(
@@ -819,9 +821,36 @@ If you use Intent Engine in research:
   title={Intent Engine: Prosody-Aware AI for Emotional Intelligence},
   author={Kase Branham},
   year={2026},
-  url={https://github.com/yourusername/intent-engine},
+  url={https://github.com/kase1111-hash/Intent-Engine},
   version={0.8.0}
 }
+```
+
+---
+
+## Prosody Protocol Dependency
+
+Intent Engine is built on the **[Prosody Protocol](https://github.com/kase1111-hash/Prosody-Protocol)** SDK, which provides the canonical implementation of:
+
+- **IML (Intent Markup Language)** - XML-based markup for prosodic information (`<utterance>`, `<prosody>`, `<pause>`, `<emphasis>`, `<segment>`)
+- **IML Parser & Validator** - Parse and validate IML documents against the spec (rules V1-V18)
+- **Prosody Analyzer** - Extract F0, intensity, jitter, shimmer, HNR from audio using Praat
+- **Emotion Classifier** - Rule-based and ML-based emotion classification from prosodic features
+- **IML Assembler** - Build IML documents from STT word alignments and prosody features
+- **IML-to-SSML Converter** - Convert IML to SSML for TTS engines
+- **Accessibility Profiles** - Load and apply atypical prosody profiles for inclusive design
+- **Dataset Tools** - Load, validate, and benchmark prosody-emotion training datasets
+- **Mavis Bridge** - Convert data from the Mavis vocal typing game into training datasets
+
+Intent Engine does **not** reimplement any of these components. Instead, it provides the orchestration layer (STT/LLM/TTS provider adapters, constitutional filter, deployment engines) that wires Prosody Protocol's tools into a complete voice AI pipeline.
+
+```python
+# Intent Engine uses Prosody Protocol types throughout
+from prosody_protocol import IMLParser, IMLValidator, IMLAssembler
+from prosody_protocol import ProsodyAnalyzer, SpanFeatures, WordAlignment
+from prosody_protocol import IMLDocument, Utterance, Prosody, Emphasis, Pause
+from prosody_protocol import ProfileLoader, ProfileApplier
+from prosody_protocol import IMLToSSML
 ```
 
 ---
@@ -829,7 +858,7 @@ If you use Intent Engine in research:
 ## Acknowledgments
 
 Built on:
-- **Prosody Protocol** (IML specification)
+- **[Prosody Protocol](https://github.com/kase1111-hash/Prosody-Protocol)** (IML specification and SDK)
 - **Mavis** (training data generation)
 - **Constitutional AI** framework (Anthropic)
 - Research from computational paralinguistics community
