@@ -67,7 +67,7 @@ class TestOpenAILLMInterpret:
         with patch.dict(sys.modules, {"openai": None}), pytest.raises(
             ImportError, match="openai is required"
         ):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 llm.interpret("<utterance>hello</utterance>")
             )
 
@@ -103,7 +103,7 @@ class TestOpenAILLMInterpret:
 
         try:
             llm = OpenAILLM(api_key="test-key")
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 llm.interpret(
                     '<utterance emotion="frustrated" confidence="0.8">'
                     "This is really annoying!</utterance>"
@@ -149,7 +149,7 @@ class TestOpenAILLMInterpret:
 
         try:
             llm = OpenAILLM(api_key="test-key")
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 llm.interpret("<utterance>hello</utterance>")
             )
 
@@ -190,7 +190,7 @@ class TestOpenAILLMInterpret:
 
         try:
             llm = OpenAILLM(api_key="test-key")
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 llm.interpret(
                     "<utterance>hello</utterance>",
                     context="Medical triage scenario",

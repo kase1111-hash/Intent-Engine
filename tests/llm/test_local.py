@@ -94,7 +94,7 @@ class TestLocalLLMLlamaBackend:
             # Pre-load to avoid file access
             llm._llama = mock_llama_instance
 
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 llm.interpret("<utterance>What is the weather?</utterance>")
             )
 
@@ -120,7 +120,7 @@ class TestLocalLLMLlamaBackend:
         llm = LocalLLM(model_path="/path/to/model.gguf")
         llm._llama = mock_llama_instance
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             llm.interpret("<utterance>hello</utterance>")
         )
 
@@ -134,7 +134,7 @@ class TestLocalLLMServerBackend:
         with patch.dict(sys.modules, {"openai": None}), pytest.raises(
             ImportError, match="openai is required"
         ):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 llm.interpret("<utterance>hello</utterance>")
             )
 
@@ -170,7 +170,7 @@ class TestLocalLLMServerBackend:
 
         try:
             llm = LocalLLM(base_url="http://localhost:11434/v1", model="mistral")
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 llm.interpret("<utterance>Confirm my order</utterance>")
             )
 
@@ -218,7 +218,7 @@ class TestLocalLLMServerBackend:
 
         try:
             llm = LocalLLM(base_url="http://localhost:8000/v1", model="qwen2")
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 llm.interpret("<utterance>hello</utterance>")
             )
 
@@ -244,7 +244,7 @@ class TestLocalLLMWithContext:
         llm = LocalLLM(model_path="/path/to/model.gguf")
         llm._llama = mock_llama_instance
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             llm.interpret(
                 "<utterance>hello</utterance>",
                 context="Healthcare triage system",

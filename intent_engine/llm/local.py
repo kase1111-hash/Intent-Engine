@@ -70,6 +70,7 @@ class LocalLLM(LLMProvider):
         self._max_tokens = max_tokens
         self._temperature = temperature
         self._llama: object | None = None
+        self._server_client: object | None = None
 
     def _load_llama(self) -> object:
         """Lazily load the llama.cpp model on first use."""
@@ -137,7 +138,15 @@ class LocalLLM(LLMProvider):
         )
 
         raw_text = response["choices"][0]["message"]["content"] or ""  # type: ignore[index]
-        parsed = json.loads(raw_text)
+
+        try:
+            parsed = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            from intent_engine.errors import LLMError
+
+            raise LLMError(
+                f"llama.cpp returned non-JSON response: {raw_text[:200]}"
+            ) from exc
 
         logger.info(
             "llama.cpp interpreted intent=%s emotion=%s (model=%s)",
@@ -156,17 +165,20 @@ class LocalLLM(LLMProvider):
         self, iml_input: str, system: str
     ) -> InterpretationResult:
         """Run inference via an OpenAI-compatible local server."""
-        try:
-            from openai import AsyncOpenAI  # type: ignore[import-untyped]
-        except ImportError as exc:
-            raise ImportError(
-                "openai is required for LocalLLM with base_url. "
-                "Install it with: pip install intent-engine[openai]"
-            ) from exc
+        if self._server_client is None:
+            try:
+                from openai import AsyncOpenAI  # type: ignore[import-untyped]
+            except ImportError as exc:
+                raise ImportError(
+                    "openai is required for LocalLLM with base_url. "
+                    "Install it with: pip install intent-engine[openai]"
+                ) from exc
 
-        client = AsyncOpenAI(api_key="not-needed", base_url=self._base_url)
+            self._server_client = AsyncOpenAI(
+                api_key="not-needed", base_url=self._base_url
+            )
 
-        response = await client.chat.completions.create(
+        response = await self._server_client.chat.completions.create(  # type: ignore[union-attr]
             model=self._model,
             max_tokens=self._max_tokens,
             temperature=self._temperature,
@@ -178,7 +190,15 @@ class LocalLLM(LLMProvider):
         )
 
         raw_text = response.choices[0].message.content or ""
-        parsed = json.loads(raw_text)
+
+        try:
+            parsed = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            from intent_engine.errors import LLMError
+
+            raise LLMError(
+                f"Local server returned non-JSON response: {raw_text[:200]}"
+            ) from exc
 
         logger.info(
             "Local server interpreted intent=%s emotion=%s (model=%s, url=%s)",

@@ -67,7 +67,7 @@ class TestClaudeLLMInterpret:
         with patch.dict(sys.modules, {"anthropic": None}), pytest.raises(
             ImportError, match="anthropic is required"
         ):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 llm.interpret("<utterance>hello</utterance>")
             )
 
@@ -94,7 +94,7 @@ class TestClaudeLLMInterpret:
 
         try:
             llm = ClaudeLLM(api_key="test-key")
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 llm.interpret('<utterance emotion="joyful" confidence="0.9">Hello!</utterance>')
             )
 
@@ -128,7 +128,7 @@ class TestClaudeLLMInterpret:
 
         try:
             llm = ClaudeLLM(api_key="test-key")
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 llm.interpret(
                     "<utterance>Can you help?</utterance>",
                     context="Customer support scenario",

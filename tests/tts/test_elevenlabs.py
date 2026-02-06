@@ -106,7 +106,7 @@ class TestElevenLabsTTSSynthesize:
         with patch.dict(sys.modules, {"elevenlabs": None}), pytest.raises(
             ImportError, match="elevenlabs is required"
         ):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 tts.synthesize("Hello")
             )
 
@@ -121,7 +121,7 @@ class TestElevenLabsTTSSynthesize:
 
         try:
             tts = ElevenLabsTTS(api_key="test-key")
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 tts.synthesize("Hello world", emotion="joyful")
             )
 
@@ -143,7 +143,7 @@ class TestElevenLabsTTSSynthesize:
 
         try:
             tts = ElevenLabsTTS(api_key="test-key")
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 tts.synthesize("I'm frustrated", emotion="frustrated")
             )
 
@@ -167,7 +167,7 @@ class TestElevenLabsTTSSynthesize:
 
         try:
             tts = ElevenLabsTTS(api_key="test-key")
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 tts.synthesize("Test", emotion="unknown_emotion")
             )
 

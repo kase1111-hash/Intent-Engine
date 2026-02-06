@@ -4,7 +4,7 @@
 
 Intent Engine is a prosody-aware AI system that preserves and interprets emotional intent in voice conversations. It processes audio through three layers: Speech-to-Text with prosody extraction, LLM-based intent interpretation, and emotionally-aware Text-to-Speech synthesis.
 
-**Status:** Beta (v0.8.0) - specification/design phase. No implementation code exists yet; the project is defined by its README and spec.
+**Status:** Beta (v0.8.0) - All 10 implementation phases complete. 38 source files, 37 test files, 571 tests.
 
 **Language:** Python
 **Package name:** `intent_engine`
@@ -68,13 +68,30 @@ Intent Engine provides the **orchestration layer** and **provider adapters** tha
 
 ```
 /
-├── README.md            # Comprehensive project documentation and vision
-├── spec.md              # Technical specification
-├── EXECUTION_GUIDE.md   # Phase-by-phase implementation plan
-└── CLAUDE.md            # This file
+├── intent_engine/          # Main package (38 source files)
+│   ├── __init__.py         # Public API exports
+│   ├── engine.py           # IntentEngine orchestrator
+│   ├── errors.py           # Error hierarchy
+│   ├── cloud_engine.py     # CloudEngine (managed API client)
+│   ├── hybrid_engine.py    # HybridEngine (cloud STT/TTS + local LLM)
+│   ├── local_engine.py     # LocalEngine (fully local)
+│   ├── models/             # Result, Response, Audio, Decision dataclasses
+│   ├── stt/                # STT adapters (Whisper, Deepgram, AssemblyAI)
+│   ├── llm/                # LLM adapters (Claude, OpenAI, local)
+│   ├── tts/                # TTS adapters (ElevenLabs, Coqui, eSpeak)
+│   ├── constitutional/     # Constitutional filter (YAML rules, evaluator)
+│   └── integrations/       # Platform integrations (Twilio, Slack, Discord, REST)
+├── tests/                  # 37 test files, 571 tests
+├── pyproject.toml          # Build config (hatchling), dependencies, tooling
+├── Makefile                # Dev shortcuts (install, test, lint, typecheck)
+├── .github/workflows/ci.yml  # GitHub Actions CI pipeline
+├── README.md               # Project documentation and vision
+├── spec.md                 # Technical specification
+├── EXECUTION_GUIDE.md      # Phase-by-phase implementation plan
+├── CONTRIBUTING.md         # Contribution guidelines
+├── LICENSE                 # Apache 2.0
+└── CLAUDE.md               # This file
 ```
-
-This repo currently contains only documentation. Implementation has not yet been committed.
 
 ## Key Concepts
 
@@ -84,29 +101,32 @@ This repo currently contains only documentation. Implementation has not yet been
 - **Constitutional Filter:** Safety system that verifies genuine user intent using prosodic features before executing sensitive actions
 - **Three-Layer Architecture:** STT (speech-to-text + prosody) → Intent Interpretation (LLM) → TTS (emotional speech synthesis)
 
-## Intended Module Structure
-
-When implementation begins, the package should follow this structure:
+## Module Structure
 
 - `intent_engine/` - Main package
   - `IntentEngine` - Main orchestrator class
   - `CloudEngine`, `HybridEngine`, `LocalEngine` - Deployment-specific engines
   - `ConstitutionalFilter` - Rule-based intent verification
-  - STT module - Speech recognition with prosody extraction (Whisper, Deepgram, AssemblyAI)
-  - LLM module - Intent interpretation (Claude, OpenAI, local LLMs)
-  - TTS module - Emotional speech synthesis (ElevenLabs, Coqui, eSpeak)
-  - ~~Prosody Analyzer~~ - **Use `prosody_protocol.ProsodyAnalyzer` instead**
-  - ~~IML Parser/Builder~~ - **Use `prosody_protocol.IMLParser` / `prosody_protocol.IMLAssembler` instead**
-  - ~~Emotion Classifier~~ - **Use `prosody_protocol.EmotionClassifier` instead**
+  - `stt/` - Speech recognition adapters (Whisper, Deepgram, AssemblyAI)
+  - `llm/` - Intent interpretation adapters (Claude, OpenAI, local LLMs)
+  - `tts/` - Speech synthesis adapters (ElevenLabs, Coqui, eSpeak)
+  - `models/` - Frozen dataclasses: Result, Response, Audio, Decision
+  - `constitutional/` - YAML rules, evaluator, filter
+  - `integrations/` - Twilio, Slack, Discord, REST API server
+  - Prosody analysis uses **`prosody_protocol.ProsodyAnalyzer`** (not reimplemented)
+  - IML parsing uses **`prosody_protocol.IMLParser` / `IMLAssembler`** (not reimplemented)
+  - Emotion classification uses **`prosody_protocol.RuleBasedEmotionClassifier`** (not reimplemented)
 
 ## Build and Development
 
-No build system is configured yet. When implementation starts:
-
-- Install: `pip install intent-engine` (planned)
-- Core dependency: `pip install prosody-protocol` (required)
+- Install: `pip install -e .` (or `pip install intent-engine` from PyPI when published)
+- Dev install: `pip install -e ".[dev]"` or `make dev`
+- Core dependency: `prosody-protocol>=0.1.0a1` (required, listed in `pyproject.toml`)
+- Run tests: `make test` (requires 80% coverage)
+- Lint: `make lint` (ruff)
+- Type check: `make typecheck` (mypy --strict)
+- Full check: `make check` (lint + typecheck + test)
 - The project targets Python >=3.10 with provider-agnostic adapters for STT, LLM, and TTS services
-- `prosody-protocol` must be listed as a required dependency in `pyproject.toml`
 
 ## Common Tasks
 

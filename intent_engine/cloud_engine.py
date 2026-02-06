@@ -224,6 +224,12 @@ class CloudEngine:
 
             from prosody_protocol import IMLDocument, IMLParser, SpanFeatures
 
+            for field in ("text", "emotion", "confidence", "iml"):
+                if field not in data:
+                    raise IntentEngineError(
+                        f"Cloud response missing required field: {field!r}"
+                    )
+
             parser = IMLParser()
             iml_doc = parser.parse(data["iml"])
 
@@ -287,6 +293,10 @@ class CloudEngine:
 
         try:
             data = await self._request("POST", "/generate", json_data=payload)
+            if "text" not in data:
+                raise IntentEngineError(
+                    "Cloud generate response missing required field: 'text'"
+                )
             return Response(
                 text=data["text"],
                 emotion=data.get("emotion", "neutral"),
@@ -327,6 +337,10 @@ class CloudEngine:
 
             import base64
 
+            if "audio_data" not in data:
+                raise IntentEngineError(
+                    "Cloud synthesize response missing required field: 'audio_data'"
+                )
             audio_data = base64.b64decode(data["audio_data"])
 
             return Audio(
@@ -351,9 +365,7 @@ class CloudEngine:
 
     def process_voice_input_sync(self, audio_path: str) -> Result:
         """Synchronous wrapper for :meth:`process_voice_input`."""
-        return asyncio.get_event_loop().run_until_complete(
-            self.process_voice_input(audio_path)
-        )
+        return asyncio.run(self.process_voice_input(audio_path))
 
     def generate_response_sync(
         self,
@@ -362,7 +374,7 @@ class CloudEngine:
         tone: str | None = None,
     ) -> Response:
         """Synchronous wrapper for :meth:`generate_response`."""
-        return asyncio.get_event_loop().run_until_complete(
+        return asyncio.run(
             self.generate_response(iml, context=context, tone=tone)
         )
 
@@ -370,6 +382,4 @@ class CloudEngine:
         self, text: str, emotion: str = "neutral"
     ) -> Audio:
         """Synchronous wrapper for :meth:`synthesize_speech`."""
-        return asyncio.get_event_loop().run_until_complete(
-            self.synthesize_speech(text, emotion=emotion)
-        )
+        return asyncio.run(self.synthesize_speech(text, emotion=emotion))

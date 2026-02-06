@@ -513,26 +513,18 @@ else:
 
 ## Deployment
 
-### Cloud (Managed Service)
+### Cloud (Managed Service) -- Planned
 
-```bash
-# Sign up at intent-engine.io
-# Get API key
+> **Note:** The managed cloud service is not yet available. The `CloudEngine` class provides the client API for when the service launches.
 
-export INTENT_ENGINE_API_KEY="ie_sk_..."
-
-# Use managed service
+```python
 from intent_engine import CloudEngine
 
-engine = CloudEngine(api_key=os.environ["INTENT_ENGINE_API_KEY"])
+engine = CloudEngine(api_key="ie_sk_...")
 result = engine.process("audio.wav")
 ```
 
-**Pricing:** Usage-based
-- STT: $0.02/minute
-- LLM processing: $0.001/request
-- TTS: $0.015/1000 characters
-- Free tier: 1000 requests/month
+**Planned pricing:** Usage-based (details TBD)
 
 ### Hybrid (Cloud STT/TTS, Local LLM)
 
@@ -584,10 +576,12 @@ CPU → Handle orchestration, TTS synthesis
 
 ## Performance Metrics
 
-### Accuracy
+> **Note:** The metrics below are design targets, not yet validated by benchmark runs. Actual benchmark infrastructure is planned for a future release.
 
-| Metric | Score | Benchmark |
-|--------|-------|-----------|
+### Accuracy (Targets)
+
+| Metric | Target | Benchmark |
+|--------|--------|-----------|
 | Emotion Detection | 87% | Prosody-protocol test set |
 | Sarcasm Detection | 82% | SARC dataset |
 | Urgency Classification | 91% | Custom healthcare dataset |
@@ -606,12 +600,12 @@ CPU → Handle orchestration, TTS synthesis
 
 ### Cost Comparison
 
-**1000 conversations/month (avg 10 turns each):**
+**Estimated costs for 1000 conversations/month (avg 10 turns each):**
 
-| Deployment | Monthly Cost |
-|------------|--------------|
-| Cloud (Managed) | $150 |
-| Hybrid | $40 (cloud STT/TTS only) |
+| Deployment | Estimated Monthly Cost |
+|------------|------------------------|
+| Cloud (Managed) | TBD (service not yet available) |
+| Hybrid | ~$40 (cloud STT/TTS provider costs) |
 | Local | $0 (hardware amortized) |
 
 ---

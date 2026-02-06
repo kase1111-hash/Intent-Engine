@@ -90,7 +90,7 @@ class TestESpeakTTSSynthesize:
 
             mock_engine.save_to_file.side_effect = fake_save
 
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 tts.synthesize("I'm angry!", emotion="angry")
             )
 
@@ -123,7 +123,7 @@ class TestESpeakTTSSynthesize:
 
             mock_engine.save_to_file.side_effect = fake_save
 
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 tts.synthesize("I'm sad", emotion="sad")
             )
 
@@ -154,7 +154,7 @@ class TestESpeakTTSSynthesize:
             mock_engine.save_to_file.side_effect = fake_save
 
             # angry has +6dB which would push volume above 1.0
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 tts.synthesize("Loud", emotion="angry")
             )
 
@@ -187,7 +187,7 @@ class TestESpeakTTSSynthesize:
 
             mock_engine.save_to_file.side_effect = fake_save
 
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 tts.synthesize("Test")
             )
 

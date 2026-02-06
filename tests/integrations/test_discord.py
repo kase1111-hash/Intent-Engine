@@ -135,7 +135,7 @@ class TestProcessAudioUrl:
         download = AsyncMock(return_value=b"RIFF fake audio")
         helper = DiscordBotHelper(engine, download_func=download)
 
-        msg = asyncio.get_event_loop().run_until_complete(
+        msg = asyncio.run(
             helper.process_audio_url(
                 "https://cdn.discordapp.com/audio.wav",
                 user_id="123456",
@@ -154,7 +154,7 @@ class TestProcessAudioUrl:
         cb = lambda r, uid: f"Custom for {uid}"
         helper = DiscordBotHelper(engine, format_callback=cb, download_func=download)
 
-        msg = asyncio.get_event_loop().run_until_complete(
+        msg = asyncio.run(
             helper.process_audio_url("https://discord.com/f.wav", user_id="U1")
         )
 
@@ -169,7 +169,7 @@ class TestProcessAudioUrl:
         download = AsyncMock(return_value=b"RIFF fake")
         helper = DiscordBotHelper(engine, download_func=download)
 
-        msg = asyncio.get_event_loop().run_until_complete(
+        msg = asyncio.run(
             helper.process_audio_url("https://discord.com/f.wav")
         )
 
@@ -190,7 +190,7 @@ class TestProcessAudioAttachment:
         attachment = MagicMock()
         attachment.url = "https://cdn.discordapp.com/file.wav"
 
-        msg = asyncio.get_event_loop().run_until_complete(
+        msg = asyncio.run(
             helper.process_audio_attachment(attachment, user_id="123")
         )
 
@@ -204,7 +204,7 @@ class TestProcessAudioAttachment:
         download = AsyncMock(return_value=b"RIFF fake")
         helper = DiscordBotHelper(engine, download_func=download)
 
-        msg = asyncio.get_event_loop().run_until_complete(
+        msg = asyncio.run(
             helper.process_audio_attachment("https://discord.com/f.wav")
         )
 

@@ -113,7 +113,7 @@ class TestProcessAudioFile:
         download = AsyncMock(return_value=b"RIFF fake audio")
         helper = SlackBotHelper(engine, download_func=download)
 
-        msg = asyncio.get_event_loop().run_until_complete(
+        msg = asyncio.run(
             helper.process_audio_file(
                 "https://files.slack.com/audio.wav",
                 channel_id="C123",
@@ -134,7 +134,7 @@ class TestProcessAudioFile:
         cb = lambda r, uid: f"Custom for {uid}: {r.text}"
         helper = SlackBotHelper(engine, format_callback=cb, download_func=download)
 
-        msg = asyncio.get_event_loop().run_until_complete(
+        msg = asyncio.run(
             helper.process_audio_file("https://slack.com/f.wav", user_id="U1")
         )
 
@@ -149,7 +149,7 @@ class TestProcessAudioFile:
         download = AsyncMock(return_value=b"RIFF fake")
         helper = SlackBotHelper(engine, download_func=download)
 
-        msg = asyncio.get_event_loop().run_until_complete(
+        msg = asyncio.run(
             helper.process_audio_file("https://slack.com/f.wav")
         )
 
@@ -162,7 +162,7 @@ class TestProcessAudioFile:
         download = AsyncMock(return_value=b"RIFF fake")
         helper = SlackBotHelper(engine, bot_token="xoxb-tok", download_func=download)
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             helper.process_audio_file("https://slack.com/f.wav")
         )
 
@@ -177,7 +177,7 @@ class TestHandleFileSharedEvent:
         helper = SlackBotHelper(MagicMock())
         event = {"file": {"mimetype": "image/png"}}
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             helper.handle_file_shared_event(event)
         )
         assert result is None
@@ -189,7 +189,7 @@ class TestHandleFileSharedEvent:
             "channel": "C1",
         }
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             helper.handle_file_shared_event(event)
         )
         assert result is None
@@ -210,7 +210,7 @@ class TestHandleFileSharedEvent:
             "user": "U456",
         }
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             helper.handle_file_shared_event(event)
         )
         assert result is not None
