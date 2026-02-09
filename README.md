@@ -152,7 +152,6 @@ Works with:
 
 ### 🏠 Deployment Flexibility
 
-- **Cloud** - Managed service (SaaS)
 - **Hybrid** - STT/TTS in cloud, LLM local
 - **Fully Local** - Complete sovereignty (your infrastructure)
 
@@ -417,24 +416,6 @@ response = llm.chat(
 )
 ```
 
-**Fine-tuning (Advanced):**
-```python
-# Train on Prosody Protocol dataset (https://github.com/kase1111-hash/Prosody-Protocol)
-from intent_engine.training import FineTuner
-
-trainer = FineTuner(
-    base_model="meta-llama/Llama-3.1-70B",
-    dataset="prosody-protocol/mavis-corpus"
-)
-
-# Fine-tune for prosody understanding
-model = trainer.train(
-    epochs=3,
-    learning_rate=1e-5,
-    task="prosody_to_intent"
-)
-```
-
 ### TTS Module
 
 **Emotional Speech Synthesis:**
@@ -513,19 +494,6 @@ else:
 
 ## Deployment
 
-### Cloud (Managed Service) -- Planned
-
-> **Note:** The managed cloud service is not yet available. The `CloudEngine` class provides the client API for when the service launches.
-
-```python
-from intent_engine import CloudEngine
-
-engine = CloudEngine(api_key="ie_sk_...")
-result = engine.process("audio.wav")
-```
-
-**Planned pricing:** Usage-based (details TBD)
-
 ### Hybrid (Cloud STT/TTS, Local LLM)
 
 ```python
@@ -587,87 +555,21 @@ CPU → Handle orchestration, TTS synthesis
 | Urgency Classification | 91% | Custom healthcare dataset |
 | Intent Verification (Constitutional) | 96% | Safety-critical scenarios |
 
-### Latency
+### Latency (Targets)
 
 **End-to-End (voice input → voice response):**
 
 | Configuration | STT | LLM | TTS | Total |
 |---------------|-----|-----|-----|-------|
-| Cloud (All) | 300ms | 400ms | 500ms | 1.2s |
 | Hybrid | 300ms | 150ms | 200ms | 650ms |
 | Local (GPU) | 400ms | 100ms | 300ms | 800ms |
 | Local (CPU) | 800ms | 2000ms | 500ms | 3.3s |
-
-### Cost Comparison
-
-**Estimated costs for 1000 conversations/month (avg 10 turns each):**
-
-| Deployment | Estimated Monthly Cost |
-|------------|------------------------|
-| Cloud (Managed) | TBD (service not yet available) |
-| Hybrid | ~$40 (cloud STT/TTS provider costs) |
-| Local | $0 (hardware amortized) |
 
 ---
 
 ## Integration Guides
 
-### With Twilio
-
-```python
-from intent_engine import IntentEngine
-from twilio.twiml.voice_response import VoiceResponse
-
-engine = IntentEngine()
-
-@app.route("/voice", methods=['POST'])
-def voice_handler():
-    # Get caller audio
-    recording_url = request.values.get('RecordingUrl')
-    
-    # Process with intent engine
-    result = engine.process_voice_input(recording_url)
-    
-    # Generate appropriate response
-    if result.emotion == "frustrated":
-        response_text = "I can hear you're frustrated. Escalating to specialist."
-        escalate_call()
-    else:
-        response_text = handle_normal_flow(result.text)
-    
-    # Synthesize with appropriate emotion
-    audio = engine.synthesize_speech(
-        response_text,
-        emotion=result.suggested_tone
-    )
-    
-    # Return TwiML
-    resp = VoiceResponse()
-    resp.play(audio.url)
-    return str(resp)
-```
-
-### With Slack/Discord Bots
-
-```python
-from intent_engine import IntentEngine
-
-engine = IntentEngine()
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    if after.channel:  # User joined voice channel
-        # Record audio
-        audio = await record_user_speech(member)
-        
-        # Analyze prosody
-        result = engine.process_voice_input(audio)
-        
-        # Respond in text chat with emotional context
-        await channel.send(
-            f"[Detected {result.emotion}] {member.mention} said: {result.text}"
-        )
-```
+> **Platform examples:** See `examples/integrations/` for ready-made adapters for Twilio, Slack, Discord, and a FastAPI REST server.
 
 ### With Constitutional AI Agents
 
@@ -710,22 +612,15 @@ class ConstitutionalAgent(Agent):
 
 ### Data Handling
 
-**Cloud Mode:**
-- Audio encrypted in transit (TLS 1.3)
-- Temporary processing only (deleted after response)
+**Local/Hybrid Mode:**
+- All processing on your infrastructure (fully local) or with cloud STT/TTS only (hybrid)
 - No permanent audio storage
-- Optional: Zero-logging mode
-
-**Local Mode:**
-- All processing on your infrastructure
-- No data leaves your network
-- Full sovereignty
+- Full sovereignty with local deployment
 
 ### Compliance
 
 - **HIPAA Ready:** Local deployment option for healthcare
 - **GDPR Compliant:** Data minimization, right to deletion
-- **SOC 2 Type II:** Cloud service (in progress)
 
 ### Emotional Data Ethics
 
@@ -741,30 +636,24 @@ We treat emotional data as **sensitive PII**:
 
 ## Roadmap
 
-### Q1 2026 (Current - Beta)
-- [x] Core STT + prosody analysis
-- [x] LLM integration (Claude, OpenAI, local)
-- [x] Basic TTS with emotion
-- [x] Constitutional filter framework
-- [ ] Production-ready cloud service
+### Completed (Beta)
+- [x] Core STT + prosody analysis pipeline
+- [x] LLM integration (Claude, OpenAI, local) with prosody-aware prompts
+- [x] TTS with emotion-to-voice parameter mapping
+- [x] Constitutional filter framework (YAML rules, prosody-based verification)
+- [x] Hybrid and local deployment engines
+- [x] Accessibility profile support (atypical prosody)
 
-### Q2 2026
-- [ ] Multi-language support (5 languages)
+### Next Priority: Core Validation
+- [ ] End-to-end pipeline validation with real audio files
+- [ ] Measured accuracy benchmarks (emotion detection, sarcasm, urgency)
+- [ ] Constitutional filter demo with real sarcasm/frustration detection
+
+### Future
+- [ ] Multi-language support
 - [ ] Real-time streaming mode
-- [ ] Advanced emotion granularity (20+ emotions)
-- [ ] Custom prosody profile builder (accessibility)
-
-### Q3 2026
-- [ ] Enterprise features (SSO, audit logs, analytics)
-- [ ] Telephony integrations (Twilio, Vonage, etc.)
-- [ ] Agent-OS deep integration
-- [ ] Healthcare-specific fine-tuning
-
-### Q4 2026
-- [ ] Mobile SDKs (iOS, Android)
-- [ ] Edge deployment (on-device processing)
-- [ ] Research API for academic use
-- [ ] Standardization proposal (W3C submission)
+- [ ] LLM fine-tuning pipeline for prosody understanding
+- [ ] Managed cloud service
 
 ---
 

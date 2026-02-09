@@ -36,7 +36,6 @@ local-llm = ["llama-cpp-python>=0.2"]
 elevenlabs = ["elevenlabs>=0.2"]
 coqui = ["TTS>=0.20"]
 espeak = ["pyttsx3>=2.90"]
-integrations = ["fastapi>=0.100", "uvicorn>=0.23"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
@@ -46,7 +45,7 @@ dev = [
     "pre-commit>=3.0",
 ]
 all = [
-    "intent-engine[whisper,deepgram,assemblyai,claude,openai,local-llm,elevenlabs,coqui,espeak,integrations,dev]",
+    "intent-engine[whisper,deepgram,assemblyai,claude,openai,local-llm,elevenlabs,coqui,espeak,dev]",
 ]
 
 [project.urls]
