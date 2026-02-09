@@ -4,7 +4,7 @@
 
 Intent Engine is a prosody-aware AI system that preserves and interprets emotional intent in voice conversations. It processes audio through three layers: Speech-to-Text with prosody extraction, LLM-based intent interpretation, and emotionally-aware Text-to-Speech synthesis.
 
-**Status:** Beta (v0.8.0) - All 10 implementation phases complete. 38 source files, 37 test files, 571 tests.
+**Status:** Beta (v0.8.0) - Core pipeline, constitutional filter, and provider adapters implemented. Refocused from broad feature set to core pipeline validation.
 
 **Language:** Python
 **Package name:** `intent_engine`
@@ -44,12 +44,12 @@ Intent Engine **MUST** use `prosody_protocol` for all of the following. Never bu
 Intent Engine provides the **orchestration layer** and **provider adapters** that the Prosody Protocol does not:
 
 - `IntentEngine` orchestrator (wires STT + prosody + LLM + TTS together)
-- `CloudEngine`, `HybridEngine`, `LocalEngine` deployment modes
+- `HybridEngine`, `LocalEngine` deployment modes
 - `ConstitutionalFilter` safety governance (YAML rules, prosody-based intent verification)
 - STT provider adapters (Whisper, Deepgram, AssemblyAI)
 - LLM provider adapters (Claude, OpenAI, local LLMs) with prosody-aware prompts
 - TTS provider adapters (ElevenLabs, Coqui, eSpeak) with emotion-to-voice mapping
-- Platform integrations (Twilio, Slack, Discord, REST API server)
+- Example integrations in `examples/` (Twilio, Slack, Discord, REST API server)
 
 ### IML Compatibility Rules
 
@@ -68,20 +68,19 @@ Intent Engine provides the **orchestration layer** and **provider adapters** tha
 
 ```
 /
-├── intent_engine/          # Main package (38 source files)
+├── intent_engine/          # Main package
 │   ├── __init__.py         # Public API exports
 │   ├── engine.py           # IntentEngine orchestrator
 │   ├── errors.py           # Error hierarchy
-│   ├── cloud_engine.py     # CloudEngine (managed API client)
 │   ├── hybrid_engine.py    # HybridEngine (cloud STT/TTS + local LLM)
 │   ├── local_engine.py     # LocalEngine (fully local)
 │   ├── models/             # Result, Response, Audio, Decision dataclasses
 │   ├── stt/                # STT adapters (Whisper, Deepgram, AssemblyAI)
 │   ├── llm/                # LLM adapters (Claude, OpenAI, local)
 │   ├── tts/                # TTS adapters (ElevenLabs, Coqui, eSpeak)
-│   ├── constitutional/     # Constitutional filter (YAML rules, evaluator)
-│   └── integrations/       # Platform integrations (Twilio, Slack, Discord, REST)
-├── tests/                  # 37 test files, 571 tests
+│   └── constitutional/     # Constitutional filter (YAML rules, evaluator)
+├── examples/               # Example integrations (Twilio, Slack, Discord, REST server)
+├── tests/                  # Test files
 ├── pyproject.toml          # Build config (hatchling), dependencies, tooling
 ├── Makefile                # Dev shortcuts (install, test, lint, typecheck)
 ├── .github/workflows/ci.yml  # GitHub Actions CI pipeline
@@ -105,17 +104,17 @@ Intent Engine provides the **orchestration layer** and **provider adapters** tha
 
 - `intent_engine/` - Main package
   - `IntentEngine` - Main orchestrator class
-  - `CloudEngine`, `HybridEngine`, `LocalEngine` - Deployment-specific engines
+  - `HybridEngine`, `LocalEngine` - Deployment-specific engines
   - `ConstitutionalFilter` - Rule-based intent verification
   - `stt/` - Speech recognition adapters (Whisper, Deepgram, AssemblyAI)
   - `llm/` - Intent interpretation adapters (Claude, OpenAI, local LLMs)
   - `tts/` - Speech synthesis adapters (ElevenLabs, Coqui, eSpeak)
   - `models/` - Frozen dataclasses: Result, Response, Audio, Decision
   - `constitutional/` - YAML rules, evaluator, filter
-  - `integrations/` - Twilio, Slack, Discord, REST API server
   - Prosody analysis uses **`prosody_protocol.ProsodyAnalyzer`** (not reimplemented)
   - IML parsing uses **`prosody_protocol.IMLParser` / `IMLAssembler`** (not reimplemented)
   - Emotion classification uses **`prosody_protocol.RuleBasedEmotionClassifier`** (not reimplemented)
+- `examples/` - Example platform integrations (Twilio, Slack, Discord, REST server)
 
 ## Build and Development
 

@@ -287,10 +287,6 @@ class TestHardwareTiers:
 
 
 class TestTopLevelImports:
-    def test_import_cloud_engine(self) -> None:
-        from intent_engine import CloudEngine
-        assert CloudEngine is not None
-
     def test_import_hybrid_engine(self) -> None:
         from intent_engine import HybridEngine
         assert HybridEngine is not None
@@ -301,5 +297,5 @@ class TestTopLevelImports:
 
     def test_all_exports(self) -> None:
         import intent_engine
-        for name in ["CloudEngine", "HybridEngine", "LocalEngine"]:
+        for name in ["HybridEngine", "LocalEngine"]:
             assert name in intent_engine.__all__, f"Missing export: {name}"
