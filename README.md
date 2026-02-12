@@ -23,7 +23,7 @@ AI Response: "Thank you for calling! How can I help you today?"
 Customer: [hangs up, writes angry review]
 ```
 
-**Current voice AI loses 60-80% of emotional context** because speech-to-text strips away prosody (tone, emphasis, pitch, rhythm).
+**Current voice AI loses significant emotional context** because speech-to-text strips away prosody (tone, emphasis, pitch, rhythm).
 
 This causes:
 - ❌ Misunderstood sarcasm
@@ -96,7 +96,7 @@ Customer: [finally feels heard]
 ### Powered By
 
 - **[Prosody Protocol](https://github.com/kase1111-hash/Prosody-Protocol)** - IML specification, SDK, and training datasets
-- **[Mavis](https://github.com/yourusername/mavis)** - Generates prosody training data
+- **Mavis** - Generates prosody training data (via Prosody Protocol's `MavisBridge`)
 - **Constitutional AI Principles** - Verifies genuine user intent before actions
 
 ---
@@ -145,10 +145,10 @@ else:
 ### 🔌 Platform Integration
 
 Works with:
-- **Anthropic Claude** - Native prosody understanding
+- **Anthropic Claude** - Prosody understanding via IML-aware system prompts
 - **OpenAI GPT** - Via system prompts and fine-tuning
 - **Local Models** - Llama, Mistral with prosody-aware prompts
-- **Existing Voice Platforms** - Twilio, Vonage, Amazon Connect
+- **Existing Voice Platforms** - Twilio, Slack, Discord (see `examples/integrations/`)
 
 ### 🏠 Deployment Flexibility
 
@@ -262,7 +262,7 @@ AI: "I'm really sorry about the wait - that's unacceptable.
 Customer: [feels heard, stays on line]
 ```
 
-**ROI:** 30-40% reduction in call escalations, 25% improvement in CSAT scores
+**Potential impact:** Reduced call escalations and improved customer satisfaction by responding with emotional awareness.
 
 ### 2. Healthcare
 
@@ -378,7 +378,7 @@ speech = engine.type_to_speech(
 | Whisper + Custom | ✅ Via post-processing | 500ms | $0 | Good |
 | Deepgram | ⚠️ Partial (emotions) | 200ms | $0.0125/min | Excellent |
 | AssemblyAI | ⚠️ Partial (sentiment) | 300ms | $0.00025/sec | Excellent |
-| Custom Fine-tuned | ✅ Full IML output | 400ms | $0 (after training) | Best |
+| Custom Fine-tuned | ✅ Full IML output | ~400ms | $0 (after training) | Best (planned) |
 
 **Our Approach:**
 - Use base STT for transcription
@@ -421,16 +421,14 @@ response = llm.chat(
 **Emotional Speech Synthesis:**
 
 ```python
-from intent_engine.tts import EmotionalTTS
+from intent_engine.tts import create_tts_provider
 
-tts = EmotionalTTS(provider="elevenlabs")
+tts = create_tts_provider("elevenlabs", api_key="...")
 
 # Synthesize with specific emotion
-audio = tts.speak(
+audio = await tts.synthesize(
     text="I understand how you feel.",
-    emotion="empathetic",
-    pitch_shift=-5,  # Slightly lower pitch
-    speaking_rate=0.9  # Slightly slower
+    emotion="empathetic"
 )
 ```
 
@@ -528,17 +526,12 @@ engine = LocalEngine(
 result = engine.process("audio.wav")
 ```
 
-**Hardware Requirements:**
-- **Minimum:** 16GB RAM, CPU-only (slow)
-- **Recommended:** 32GB RAM, NVIDIA RTX 4090
-- **Optimal:** 128GB RAM, 2x NVIDIA A100 (GPU)
+**Hardware Requirements (estimated, not yet benchmarked):**
+- **Minimum:** 16GB RAM, CPU-only
+- **Recommended:** 32GB RAM, NVIDIA GPU with 24GB+ VRAM
+- **Optimal:** 128GB RAM, high-end NVIDIA GPU(s)
 
-**Your Digital Tractor Setup:**
-```
-2x GPU → Run Llama 70B with prosody fine-tuning
-1x GPU → Run Whisper + prosody analysis
-CPU → Handle orchestration, TTS synthesis
-```
+> These are estimates based on the underlying model requirements (Whisper, Llama, etc.), not measured benchmarks from Intent Engine itself.
 
 ---
 
@@ -569,7 +562,7 @@ CPU → Handle orchestration, TTS synthesis
 
 ## Integration Guides
 
-> **Platform examples:** See `examples/integrations/` for ready-made adapters for Twilio, Slack, Discord, and a FastAPI REST server.
+> **Platform examples:** See `examples/integrations/` for example adapters for Twilio, Slack, Discord, and a FastAPI REST server. These are demonstration code, not part of the core package.
 
 ### With Constitutional AI Agents
 
@@ -636,13 +629,13 @@ We treat emotional data as **sensitive PII**:
 
 ## Roadmap
 
-### Completed (Beta)
-- [x] Core STT + prosody analysis pipeline
+### Implemented (Beta -- not yet validated with real audio)
+- [x] Core STT + prosody analysis pipeline (adapters complete, all tests use mocked providers)
 - [x] LLM integration (Claude, OpenAI, local) with prosody-aware prompts
 - [x] TTS with emotion-to-voice parameter mapping
 - [x] Constitutional filter framework (YAML rules, prosody-based verification)
 - [x] Hybrid and local deployment engines
-- [x] Accessibility profile support (atypical prosody)
+- [x] Accessibility profile support (via Prosody Protocol)
 
 ### Next Priority: Core Validation
 - [ ] End-to-end pipeline validation with real audio files
@@ -687,9 +680,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for details.
 
 ## License
 
-tbd
-
-Commercial-friendly, patent-grant included, attribution required.
+Apache License 2.0. Commercial-friendly, patent-grant included, attribution required.
 
 See [LICENSE](./LICENSE) for full terms.
 
@@ -742,7 +733,7 @@ from prosody_protocol import IMLToSSML
 
 Built on:
 - **[Prosody Protocol](https://github.com/kase1111-hash/Prosody-Protocol)** (IML specification and SDK)
-- **Mavis** (training data generation)
+- **Mavis** (training data generation, via Prosody Protocol's `MavisBridge`)
 - **Constitutional AI** framework (Anthropic)
 - Research from computational paralinguistics community
 

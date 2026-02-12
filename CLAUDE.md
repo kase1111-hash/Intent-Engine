@@ -15,7 +15,7 @@ Intent Engine is built on top of the **Prosody Protocol** SDK. This is the canon
 
 **Repository:** https://github.com/kase1111-hash/Prosody-Protocol
 **Package:** `prosody-protocol` (PyPI) / `prosody_protocol` (import)
-**Version:** 0.1.0-alpha (tracks IML spec v1.0)
+**Version:** 0.1.0a1 (tracks IML spec v1.0)
 
 ### What Prosody Protocol Provides (DO NOT reimplement)
 

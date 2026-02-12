@@ -18,7 +18,6 @@ Each phase is designed to be self-contained and testable before moving to the ne
 intent_engine/
 ├── __init__.py              # Public API exports
 ├── engine.py                # IntentEngine orchestrator
-├── cloud_engine.py          # CloudEngine
 ├── hybrid_engine.py         # HybridEngine
 ├── local_engine.py          # LocalEngine
 ├── models/
@@ -51,12 +50,6 @@ intent_engine/
 │   ├── filter.py            # ConstitutionalFilter class
 │   ├── rules.py             # Rule parser (YAML schema)
 │   └── evaluator.py         # Prosody-based rule evaluation logic
-└── integrations/
-    ├── __init__.py
-    ├── twilio.py             # Twilio webhook handler
-    ├── slack.py              # Slack bot helper
-    ├── discord.py            # Discord bot helper
-    └── server.py             # Generic REST API server
 ```
 
 **Note:** There are NO `iml/`, `prosody/`, `emotions/`, or `accessibility/` directories. All IML parsing, prosody analysis, emotion classification, and accessibility profile handling is provided by the `prosody_protocol` package. Intent Engine imports these directly:
@@ -615,33 +608,26 @@ All public methods should be `async`. Provide synchronous wrappers for convenien
 
 ## Phase 7: Deployment Engines
 
-**Goal:** Implement the three deployment-specific engine variants that wrap `IntentEngine` with appropriate defaults and constraints.
+**Goal:** Implement the deployment-specific engine variants that wrap `IntentEngine` with appropriate defaults and constraints.
 
-### 7.1 CloudEngine
-
-- Wraps a REST client that calls the Intent Engine managed service.
-- Handles authentication, retries, rate limiting.
-- Returns the same `Result`, `Response`, `Audio` objects.
-
-### 7.2 HybridEngine
+### 7.1 HybridEngine
 
 - Cloud STT/TTS, local LLM.
 - Uses `prosody_protocol.ProsodyAnalyzer` locally for prosody extraction.
 - Inherits from or delegates to `IntentEngine`.
 
-### 7.3 LocalEngine
+### 7.2 LocalEngine
 
 - Everything runs locally.
 - Validates that all models are available on disk.
 - No network calls.
 - `prosody_protocol` components all run locally by default (parselmouth, librosa).
 
-### 7.4 Deliverables Checklist
+### 7.3 Deliverables Checklist
 
-- [ ] `CloudEngine` with API client and auth
 - [ ] `HybridEngine` with mixed cloud/local configuration
 - [ ] `LocalEngine` with full local processing
-- [ ] Shared interface: all three expose `process_voice_input`, `generate_response`, `synthesize_speech`
+- [ ] Shared interface: both expose `process_voice_input`, `generate_response`, `synthesize_speech`
 - [ ] Configuration validation
 - [ ] Unit tests for each engine variant
 
@@ -649,16 +635,15 @@ All public methods should be `async`. Provide synchronous wrappers for convenien
 
 ## Phase 8: Integrations and Platform Adapters
 
-**Goal:** Provide ready-made adapters for common voice platforms.
+**Goal:** Provide example adapters for common voice platforms. These live in `examples/integrations/` and are not part of the core `intent_engine` package.
 
 ### 8.1 Twilio Integration
 
-- Flask/FastAPI webhook handler.
-- Package as: `from intent_engine.integrations.twilio import TwilioVoiceHandler`.
+- FastAPI webhook handler for processing Twilio call recordings.
 
 ### 8.2 Slack/Discord Bot Helpers
 
-- Voice channel audio recording and processing.
+- Audio attachment download and processing helpers.
 
 ### 8.3 Generic REST API Server
 
@@ -668,11 +653,10 @@ All public methods should be `async`. Provide synchronous wrappers for convenien
 
 ### 8.4 Deliverables Checklist
 
-- [ ] Twilio voice webhook handler
-- [ ] Slack bot helper
-- [ ] Discord bot helper
-- [ ] Generic REST API server (`intent_engine.integrations.server`)
-- [ ] Integration examples in `examples/` directory
+- [ ] Twilio voice webhook handler (`examples/integrations/twilio.py`)
+- [ ] Slack bot helper (`examples/integrations/slack.py`)
+- [ ] Discord bot helper (`examples/integrations/discord.py`)
+- [ ] Generic REST API server (`examples/integrations/server.py`)
 - [ ] Documentation for each integration
 
 ---
@@ -926,7 +910,7 @@ WordAlignment)  IML strings)   IMLToSSML)
 | 5 | Phase 4: TTS Module | Third pipeline layer (uses `IMLToSSML`) |
 | 6 | Phase 5: Constitutional Filter | Safety layer using `SpanFeatures` |
 | 7 | Phase 6: Orchestrator | Wires everything with PP's `ProsodyAnalyzer` + `IMLAssembler` |
-| 8 | Phase 7: Deployment Engines | Cloud/Hybrid/Local packaging |
+| 8 | Phase 7: Deployment Engines | Hybrid/Local packaging |
 | 9 | Phase 8: Integrations | Platform-specific adapters |
 | 10 | Phase 9: Accessibility | Profiles via PP's `ProfileApplier` |
 | 11 | Phase 10: Testing & Benchmarks | Quality pass with PP's `Benchmark` |
@@ -935,7 +919,7 @@ WordAlignment)  IML strings)   IMLToSSML)
 **Milestone checkpoints:**
 - After Phase 2: Demo "audio in → IML out" (using PP's `ProsodyAnalyzer` + `IMLAssembler`).
 - After Phase 6: Demo full pipeline "audio in → spoken response out."
-- After Phase 7: All three deployment modes functional.
+- After Phase 7: Both deployment modes (Hybrid, Local) functional.
 - After Phase 10: Release candidate.
 
 ---
