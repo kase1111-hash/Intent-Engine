@@ -2,7 +2,7 @@
 
 **Version:** 0.8.0 (Beta)
 **Author:** Kase Branham
-**License:** TBD (Commercial-friendly, patent-grant included, attribution required)
+**License:** Apache License 2.0
 
 ---
 
@@ -12,7 +12,7 @@ Intent Engine is a prosody-aware AI system that preserves and interprets emotion
 
 ### 1.1 Problem Statement
 
-Current voice AI systems lose 60-80% of emotional context because speech-to-text strips away prosody. This leads to:
+Current voice AI systems lose significant emotional context because speech-to-text strips away prosody. This leads to:
 
 - Misunderstood sarcasm
 - Missed urgency signals
@@ -26,7 +26,7 @@ Current voice AI systems lose 60-80% of emotional context because speech-to-text
 - Enable AI systems to distinguish sarcasm, urgency, frustration, sincerity, and other emotional states
 - Provide constitutional intent verification using prosodic features
 - Support accessible and inclusive prosody profiles
-- Offer flexible deployment: cloud, hybrid, and fully local
+- Offer flexible deployment: hybrid and fully local
 
 ---
 
@@ -180,14 +180,6 @@ engine = IntentEngine(
 )
 ```
 
-#### CloudEngine (Managed Service)
-
-```python
-from intent_engine import CloudEngine
-
-engine = CloudEngine(api_key="ie_sk_...")
-```
-
 #### HybridEngine (Cloud STT/TTS + Local LLM)
 
 ```python
@@ -308,7 +300,7 @@ rules:
 | Whisper + Custom Post-Processing | Full (via ProsodyAnalyzer) | ~500ms | Free (self-hosted) | Good |
 | Deepgram | Partial (emotions only) | ~200ms | $0.0125/min | Excellent |
 | AssemblyAI | Partial (sentiment only) | ~300ms | $0.00025/sec | Excellent |
-| Custom Fine-Tuned | Full IML output | ~400ms | Free (after training) | Best |
+| Custom Fine-Tuned (planned) | Full IML output | ~400ms | Free (after training) | Best |
 
 **Processing approach:** Use base STT for transcription, then post-process audio with the ProsodyAnalyzer to generate IML markup. Results are cached for efficiency.
 
@@ -349,23 +341,13 @@ The TTS module applies emotional parameters to speech output:
 
 ## 8. Deployment Modes
 
-### 8.1 Cloud (Managed Service)
-
-- All processing handled by Intent Engine infrastructure
-- API key authentication
-- Usage-based pricing:
-  - STT: $0.02/minute
-  - LLM: $0.001/request
-  - TTS: $0.015/1000 characters
-  - Free tier: 1000 requests/month
-
-### 8.2 Hybrid
+### 8.1 Hybrid
 
 - STT/TTS in cloud (quality benefit)
 - LLM runs locally (privacy, no per-request cost)
 - Best balance of quality, cost, and control
 
-### 8.3 Fully Local (Sovereignty Mode)
+### 8.2 Fully Local (Sovereignty Mode)
 
 - All processing on user infrastructure
 - No data leaves the network
@@ -381,7 +363,9 @@ The TTS module applies emotional parameters to speech output:
 
 ## 9. Performance Targets
 
-### 9.1 Accuracy
+> **Note:** All metrics in this section are design targets, not measured results. No benchmarks have been run with real audio yet. These targets will be updated with actual measurements as validation progresses.
+
+### 9.1 Accuracy (Targets)
 
 | Metric | Target | Benchmark Dataset |
 |---|---|---|
@@ -390,21 +374,19 @@ The TTS module applies emotional parameters to speech output:
 | Urgency Classification | 91% | Custom healthcare dataset |
 | Intent Verification (Constitutional) | 96% | Safety-critical scenarios |
 
-### 9.2 End-to-End Latency
+### 9.2 End-to-End Latency (Targets)
 
 | Configuration | STT | LLM | TTS | Total |
 |---|---|---|---|---|
-| Cloud (All) | 300ms | 400ms | 500ms | 1.2s |
 | Hybrid | 300ms | 150ms | 200ms | 650ms |
 | Local (GPU) | 400ms | 100ms | 300ms | 800ms |
 | Local (CPU) | 800ms | 2000ms | 500ms | 3.3s |
 
-### 9.3 Cost (1000 conversations/month, ~10 turns each)
+### 9.3 Cost Estimates (1000 conversations/month, ~10 turns each)
 
-| Deployment | Monthly Cost |
+| Deployment | Estimated Monthly Cost |
 |---|---|
-| Cloud (Managed) | ~$150 |
-| Hybrid | ~$40 |
+| Hybrid | ~$40 (cloud STT/TTS API costs) |
 | Local | $0 (hardware amortized) |
 
 ---
@@ -413,14 +395,13 @@ The TTS module applies emotional parameters to speech output:
 
 ### 10.1 Data Handling
 
-- **Cloud:** TLS 1.3 encryption in transit; temporary processing only; no permanent audio storage; optional zero-logging mode
+- **Hybrid:** Cloud STT/TTS calls use provider encryption (TLS); LLM processing stays local
 - **Local:** All processing on user infrastructure; no data leaves the network
 
 ### 10.2 Compliance Targets
 
 - HIPAA Ready (local deployment)
 - GDPR Compliant (data minimization, right to deletion)
-- SOC 2 Type II (cloud service, in progress)
 
 ### 10.3 Emotional Data Ethics
 
@@ -449,16 +430,15 @@ Support for users whose prosody does not follow neurotypical patterns (autism, s
 
 ## 12. Integration Points
 
-| Platform | Integration Method |
-|---|---|
-| Twilio | Voice webhook handler |
-| Vonage | Voice API adapter |
-| Amazon Connect | Contact flow integration |
-| Slack | Bot event handler (voice channels) |
-| Discord | Voice state update listener |
-| Anthropic Claude | Native API with prosody-aware prompts |
-| OpenAI GPT | System prompts and fine-tuning |
-| Local LLMs (Llama, Mistral) | Prosody-aware prompt templates |
+| Platform | Integration Method | Status |
+|---|---|---|
+| Twilio | Voice webhook handler | Example in `examples/integrations/` |
+| Slack | Bot event handler (audio attachments) | Example in `examples/integrations/` |
+| Discord | Bot helper (audio attachments) | Example in `examples/integrations/` |
+| FastAPI REST Server | HTTP endpoints (`/process`, `/generate`, `/synthesize`) | Example in `examples/integrations/` |
+| Anthropic Claude | LLM provider adapter with prosody-aware prompts | Core adapter |
+| OpenAI GPT | LLM provider adapter with system prompts | Core adapter |
+| Local LLMs (Llama, Mistral) | LLM provider adapter with prosody-aware prompts | Core adapter |
 
 ---
 
@@ -494,22 +474,34 @@ Key classes consumed by Intent Engine:
 | ElevenLabs API | TTS provider |
 | Coqui TTS | Open-source TTS |
 | eSpeak | Open-source TTS |
-| Twilio SDK | Telephony integration |
+| Twilio SDK | Telephony integration (example code only, not a core dependency) |
 
 ### 13.3 Related Projects
 
 | Project | Relationship |
 |---|---|
 | [Prosody Protocol](https://github.com/kase1111-hash/Prosody-Protocol) | IML specification, SDK, and training datasets (core dependency) |
-| [Mavis](https://github.com/yourusername/mavis) | Generates prosody training data via the Prosody Protocol's MavisBridge |
+| Mavis | Generates prosody training data via the Prosody Protocol's `MavisBridge` |
 
 ---
 
 ## 14. Roadmap
 
-| Quarter | Milestones |
-|---|---|
-| **Q1 2026 (Beta)** | Core STT + prosody analysis; LLM integration (Claude, OpenAI, local); basic emotional TTS; constitutional filter framework; production cloud service |
-| **Q2 2026** | Multi-language support (5 languages); real-time streaming mode; 20+ emotion granularity; custom prosody profile builder |
-| **Q3 2026** | Enterprise features (SSO, audit logs, analytics); telephony integrations; Agent-OS deep integration; healthcare fine-tuning |
-| **Q4 2026** | Mobile SDKs (iOS, Android); edge deployment (on-device); research API; W3C standardization proposal |
+### Implemented (Beta -- not yet validated with real audio)
+- Core STT + prosody analysis pipeline (provider adapters for Whisper, Deepgram, AssemblyAI)
+- LLM integration (Claude, OpenAI, local) with prosody-aware prompts
+- Emotional TTS (ElevenLabs, Coqui, eSpeak) with emotion-to-voice parameter mapping
+- Constitutional filter framework (YAML rules, prosody-based verification)
+- Hybrid and local deployment engines
+
+### Next Priority: Core Validation
+- End-to-end pipeline validation with real audio files
+- Measured accuracy benchmarks (emotion detection, sarcasm, urgency)
+- Constitutional filter demo with real sarcasm/frustration detection
+
+### Future
+- Multi-language support
+- Real-time streaming mode
+- Expanded emotion granularity
+- LLM fine-tuning pipeline for prosody understanding
+- Managed cloud service
