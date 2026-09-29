@@ -39,7 +39,7 @@ class TestClaudeLLMConstruction:
 
     def test_default_model(self) -> None:
         llm = ClaudeLLM(api_key="key")
-        assert llm._model == "claude-sonnet-5-5"
+        assert llm._model == "claude-sonnet-4-20250514"
 
     def test_temperature_is_optional(self) -> None:
         llm = ClaudeLLM(api_key="key")

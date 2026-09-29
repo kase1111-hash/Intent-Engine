@@ -210,11 +210,11 @@ class TestHybridEngineWiring:
         engine = HybridEngine(
             stt_kwargs=FAKE_KEY,
             llm_provider="claude",
-            llm_model="claude-opus-4",
+            llm_model="a-cloud-model-id",
             llm_kwargs=FAKE_KEY,
         )
 
-        assert engine._llm._model == "claude-opus-4"
+        assert engine._llm._model == "a-cloud-model-id"
 
     def test_is_llm_local_for_a_local_llm(self, gguf: str) -> None:
         assert HybridEngine(stt_kwargs=FAKE_KEY, llm_model=gguf).is_llm_local is True

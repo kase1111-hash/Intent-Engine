@@ -28,7 +28,7 @@ class ClaudeLLM(LLMProvider):
         Anthropic API key.  Falls back to the ``ANTHROPIC_API_KEY``
         environment variable if not provided.
     model:
-        Claude model to use (e.g., ``"claude-sonnet-5-5"``).
+        Claude model to use (e.g., ``"claude-sonnet-4-20250514"``).
     max_tokens:
         Maximum tokens in the response.  Current Claude models think
         before they answer and the thinking counts towards this limit,
@@ -46,7 +46,7 @@ class ClaudeLLM(LLMProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "claude-sonnet-5-5",
+        model: str = "claude-sonnet-4-20250514",
         max_tokens: int = 8192,
         temperature: float | None = None,
         **kwargs: object,

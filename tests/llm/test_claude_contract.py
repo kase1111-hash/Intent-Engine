@@ -50,10 +50,10 @@ class TestRequestShape:
         sent = set(fake_api.requests[0].body)
         assert sent <= declared | {"stream"}, sent - declared
 
-    def test_default_model_is_a_currently_served_id(self, fake_api: FakeAPIServer) -> None:
-        _interpret(ClaudeLLM(api_key="k"))
+    def test_the_configured_model_is_what_is_sent(self, fake_api: FakeAPIServer) -> None:
+        _interpret(ClaudeLLM(api_key="k", model="the-configured-model"))
 
-        assert fake_api.requests[0].body["model"] == "claude-sonnet-5-5"
+        assert fake_api.requests[0].body["model"] == "the-configured-model"
 
     def test_default_max_tokens_leaves_room_for_thinking(
         self, fake_api: FakeAPIServer
