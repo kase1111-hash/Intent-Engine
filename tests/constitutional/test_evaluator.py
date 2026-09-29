@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from prosody_protocol import SpanFeatures
 
 from intent_engine.constitutional.evaluator import (
@@ -17,7 +16,6 @@ from intent_engine.constitutional.rules import (
     ProsodyCondition,
     Verification,
 )
-from intent_engine.models.decision import Decision
 
 
 def _make_features(

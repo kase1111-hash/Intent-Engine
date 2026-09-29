@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from prosody_protocol import WordAlignment
 
@@ -43,13 +44,13 @@ class WhisperSTT(STTProvider):
         self._model_size = model_size
         self._device = device
         self._language = language
-        self._model: object | None = None
+        self._model: Any = None
 
-    def _load_model(self) -> object:
+    def _load_model(self) -> Any:
         """Lazily load the Whisper model on first use."""
         if self._model is None:
             try:
-                import whisper  # type: ignore[import-untyped]
+                import whisper
             except ImportError as exc:
                 raise ImportError(
                     "openai-whisper is required for WhisperSTT. "
@@ -78,7 +79,7 @@ class WhisperSTT(STTProvider):
 
         model = self._load_model()
 
-        import whisper  # type: ignore[import-untyped]
+        import whisper
 
         result = whisper.transcribe(
             model,

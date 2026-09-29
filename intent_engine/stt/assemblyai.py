@@ -56,7 +56,7 @@ class AssemblyAISTT(STTProvider):
             Transcription with word-level ``WordAlignment`` timestamps.
         """
         try:
-            import assemblyai as aai  # type: ignore[import-untyped]
+            import assemblyai as aai
         except ImportError as exc:
             raise ImportError(
                 "assemblyai is required for AssemblyAISTT. "

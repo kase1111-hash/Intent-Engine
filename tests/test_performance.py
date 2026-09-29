@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from prosody_protocol import (
     ProsodyMapping,
     ProsodyProfile,
@@ -30,7 +29,6 @@ from tests.conftest import (
     make_synthesis_result,
     make_transcription_result,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

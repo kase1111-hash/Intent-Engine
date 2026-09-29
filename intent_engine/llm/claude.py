@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from typing import Any
 
 from intent_engine.llm.base import InterpretationResult, LLMProvider
 from intent_engine.llm.prompts import SYSTEM_PROMPT
@@ -50,12 +51,12 @@ class ClaudeLLM(LLMProvider):
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature
-        self._client: object | None = None
+        self._client: Any = None
 
-    def _get_client(self) -> object:
+    def _get_client(self) -> Any:
         """Return a reusable async client, creating it on first call."""
         if self._client is None:
-            import anthropic  # type: ignore[import-untyped]
+            import anthropic
 
             self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
         return self._client
@@ -91,7 +92,7 @@ class ClaudeLLM(LLMProvider):
 
         client = self._get_client()
 
-        response = await client.messages.create(  # type: ignore[union-attr]
+        response = await client.messages.create(
             model=self._model,
             max_tokens=self._max_tokens,
             temperature=self._temperature,

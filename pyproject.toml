@@ -22,7 +22,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "prosody-protocol>=0.1.0a1",
+    "prosody-protocol[audio]>=0.1.0a1",
     "pyyaml>=6.0",
 ]
 
@@ -42,6 +42,7 @@ dev = [
     "pytest-asyncio>=0.21",
     "ruff>=0.1",
     "mypy>=1.5",
+    "types-PyYAML>=6.0",
     "pre-commit>=3.0",
 ]
 all = [
@@ -67,3 +68,28 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.10"
 strict = true
+
+# Provider SDKs are optional extras and are imported lazily, so they are
+# usually absent when type checking. Treat them as untyped either way.
+[[tool.mypy.overrides]]
+module = [
+    "anthropic",
+    "assemblyai",
+    "deepgram",
+    "elevenlabs",
+    "llama_cpp",
+    "openai",
+    "pyttsx3",
+    "TTS",
+    "TTS.*",
+    "whisper",
+]
+ignore_missing_imports = true
+
+# numpy comes in through prosody-protocol[audio]. Newer releases ship stubs in
+# syntax newer than `python_version` above (the `type` statement), which mypy
+# rejects. This package never imports numpy directly, so skip it.
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true

@@ -7,22 +7,19 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from prosody_protocol import (
     IMLDocument,
     Segment,
-    SpanFeatures,
     Utterance,
     ValidationResult,
 )
 
 from intent_engine.engine import IntentEngine
-from intent_engine.hybrid_engine import HybridEngine, _HYBRID_DEFAULTS
+from intent_engine.hybrid_engine import HybridEngine
 from intent_engine.llm.base import InterpretationResult
 from intent_engine.models.response import Response
 from intent_engine.models.result import Result
 from intent_engine.stt.base import TranscriptionResult
-from intent_engine.tts.base import SynthesisResult
 
 
 def _create_hybrid(
@@ -125,7 +122,7 @@ class TestHybridEnginePipeline:
         engine._analyzer.detect_pauses = MagicMock(return_value=[])
 
         iml_doc = IMLDocument(
-            utterances=(Utterance(children=(Segment(),)),), version="1.0"
+            utterances=(Utterance(children=(Segment(),)),), version="0.1.0"
         )
         engine._assembler.assemble = MagicMock(return_value=iml_doc)
         engine._parser.to_iml_string = MagicMock(return_value="<iml/>")

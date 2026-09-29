@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from typing import Any
 
 from intent_engine.llm.base import InterpretationResult, LLMProvider
 from intent_engine.llm.prompts import SYSTEM_PROMPT
@@ -50,12 +51,12 @@ class OpenAILLM(LLMProvider):
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature
-        self._client: object | None = None
+        self._client: Any = None
 
-    def _get_client(self) -> object:
+    def _get_client(self) -> Any:
         """Return a reusable async client, creating it on first call."""
         if self._client is None:
-            from openai import AsyncOpenAI  # type: ignore[import-untyped]
+            from openai import AsyncOpenAI
 
             self._client = AsyncOpenAI(api_key=self._api_key)
         return self._client
@@ -89,7 +90,7 @@ class OpenAILLM(LLMProvider):
         if context:
             system = f"{system}\n\n## Additional Context\n{context}"
 
-        response = await client.chat.completions.create(  # type: ignore[union-attr]
+        response = await client.chat.completions.create(
             model=self._model,
             max_tokens=self._max_tokens,
             temperature=self._temperature,

@@ -14,16 +14,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from prosody_protocol import (
-    IMLDocument,
     IMLParser,
     IMLValidator,
-    Segment,
-    SpanFeatures,
-    Utterance,
     ValidationResult,
 )
 
-from intent_engine.engine import IntentEngine
 from tests.conftest import (
     assert_valid_iml,
     create_mocked_engine,
@@ -31,7 +26,6 @@ from tests.conftest import (
     make_span_features,
     make_transcription_result,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -84,7 +78,7 @@ class TestIMLValidationGate:
 
     def test_utterance_with_prosody(self) -> None:
         assert_valid_iml(
-            '<iml><utterance><prosody pitch="high">Yes!</prosody></utterance></iml>'
+            '<iml><utterance><prosody pitch="+20%">Yes!</prosody></utterance></iml>'
         )
 
     def test_multi_utterance(self) -> None:

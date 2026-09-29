@@ -7,11 +7,8 @@ synthetic dataset entries (no real audio) to keep tests fast.
 
 from __future__ import annotations
 
-import json
 import tempfile
-import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 from prosody_protocol import (
@@ -20,10 +17,8 @@ from prosody_protocol import (
     Dataset,
     DatasetEntry,
     DatasetLoader,
-    IMLParser,
-    IMLValidator,
+    ValidationResult,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -35,9 +30,11 @@ def _make_entry(
     text: str = "Hello world",
     emotion: str = "joyful",
     iml: str | None = None,
-    audio_file: str = "audio/e001.wav",
+    audio_file: str | None = None,
 ) -> DatasetEntry:
     """Create a DatasetEntry with sensible defaults."""
+    if audio_file is None:
+        audio_file = f"audio/{entry_id}.wav"
     if iml is None:
         iml = (
             f'<iml><utterance emotion="{emotion}" confidence="0.9">'
@@ -70,11 +67,21 @@ def _make_dataset(entries: list[DatasetEntry] | None = None) -> Dataset:
     return Dataset(name="test-dataset", entries=entries)
 
 
-def _make_mock_converter():
-    """Create a mock converter that returns the ground-truth IML."""
-    converter = MagicMock()
-    converter.convert = MagicMock(return_value=None)
-    return converter
+class _GroundTruthConverter:
+    """Stands in for ``AudioToIML`` by returning each entry's annotated IML.
+
+    ``Benchmark.run()`` calls ``convert(audio_path)`` once per entry and scores
+    the returned IML string against the entry's labels, so this looks the
+    answer up by audio file name.  No audio is read.
+    """
+
+    def __init__(self, dataset: Dataset) -> None:
+        self._iml = {Path(e.audio_file).stem: e.iml for e in dataset.entries}
+        self.calls = 0
+
+    def convert(self, audio_path: str | Path) -> str:
+        self.calls += 1
+        return self._iml[Path(audio_path).stem]
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +102,7 @@ class TestBenchmarkReport:
             validity_rate=1.0,
             num_samples=100,
             duration_seconds=5.0,
+            num_failures=0,
         )
         assert report.emotion_accuracy == 0.87
         assert report.num_samples == 100
@@ -109,6 +117,7 @@ class TestBenchmarkReport:
             validity_rate=1.0,
             num_samples=50,
             duration_seconds=2.5,
+            num_failures=0,
         )
         d = report.to_dict()
         assert isinstance(d, dict)
@@ -125,6 +134,7 @@ class TestBenchmarkReport:
             validity_rate=1.0,
             num_samples=10,
             duration_seconds=1.0,
+            num_failures=0,
         )
 
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
@@ -149,6 +159,7 @@ class TestBenchmarkReport:
             validity_rate=0.95,
             num_samples=100,
             duration_seconds=5.0,
+            num_failures=0,
         )
         current = BenchmarkReport(
             emotion_accuracy=0.90,
@@ -159,6 +170,7 @@ class TestBenchmarkReport:
             validity_rate=1.0,
             num_samples=100,
             duration_seconds=4.5,
+            num_failures=0,
         )
         failures = current.check_regression(baseline=baseline)
         assert failures == []
@@ -173,6 +185,7 @@ class TestBenchmarkReport:
             validity_rate=1.0,
             num_samples=100,
             duration_seconds=5.0,
+            num_failures=0,
         )
         current = BenchmarkReport(
             emotion_accuracy=0.50,
@@ -183,6 +196,7 @@ class TestBenchmarkReport:
             validity_rate=0.5,
             num_samples=100,
             duration_seconds=5.0,
+            num_failures=0,
         )
         failures = current.check_regression(baseline=baseline)
         assert len(failures) > 0
@@ -197,6 +211,7 @@ class TestBenchmarkReport:
             validity_rate=0.9,
             num_samples=50,
             duration_seconds=3.0,
+            num_failures=0,
         )
         # Set thresholds higher than actual values
         failures = report.check_regression(
@@ -211,51 +226,48 @@ class TestBenchmarkReport:
 
 
 class TestBenchmarkRun:
-    """Benchmark.run() produces a valid report."""
+    """Benchmark.run() converts each entry's audio and scores the result."""
 
-    def test_run_with_synthetic_dataset(self) -> None:
-        """Benchmark runs on synthetic dataset without audio (ground-truth IML only)."""
+    def test_run_with_synthetic_dataset(self, tmp_path: Path) -> None:
         dataset = _make_dataset()
-        converter = _make_mock_converter()
+        converter = _GroundTruthConverter(dataset)
 
-        # dataset_dir=None means Benchmark uses ground-truth IML from entries
-        benchmark = Benchmark(dataset=dataset, converter=converter, dataset_dir=None)
+        benchmark = Benchmark(dataset=dataset, converter=converter, dataset_dir=tmp_path)
         report = benchmark.run()
 
         assert isinstance(report, BenchmarkReport)
         assert report.num_samples == 5
+        assert report.num_failures == 0
+        assert converter.calls == 5
         assert 0.0 <= report.emotion_accuracy <= 1.0
         assert 0.0 <= report.validity_rate <= 1.0
         assert report.duration_seconds >= 0.0
 
-    def test_run_with_max_samples(self) -> None:
+    def test_run_with_max_samples(self, tmp_path: Path) -> None:
         dataset = _make_dataset()
-        converter = _make_mock_converter()
-        benchmark = Benchmark(dataset=dataset, converter=converter, dataset_dir=None)
+        converter = _GroundTruthConverter(dataset)
+        benchmark = Benchmark(dataset=dataset, converter=converter, dataset_dir=tmp_path)
 
         report = benchmark.run(max_samples=2)
         assert report.num_samples == 2
+        assert converter.calls == 2
 
-    def test_perfect_ground_truth_gets_high_accuracy(self) -> None:
-        """When using ground-truth IML, emotion accuracy should be high."""
-        entries = [
-            _make_entry(f"e{i:03d}", f"Text {i}", "joyful")
-            for i in range(10)
-        ]
+    def test_perfect_converter_gets_perfect_accuracy(self, tmp_path: Path) -> None:
+        """A converter that reproduces the annotations scores 100% on them."""
+        entries = [_make_entry(f"e{i:03d}", f"Text {i}", "joyful") for i in range(10)]
         dataset = Dataset(name="perfect", entries=entries)
-        converter = _make_mock_converter()
+        converter = _GroundTruthConverter(dataset)
 
-        benchmark = Benchmark(dataset=dataset, converter=converter, dataset_dir=None)
+        benchmark = Benchmark(dataset=dataset, converter=converter, dataset_dir=tmp_path)
         report = benchmark.run()
 
-        # Ground-truth comparison should yield high accuracy
-        assert report.emotion_accuracy >= 0.8
-        assert report.validity_rate >= 0.8
+        assert report.emotion_accuracy == pytest.approx(1.0)
+        assert report.validity_rate == pytest.approx(1.0)
 
-    def test_report_contains_all_fields(self) -> None:
+    def test_report_contains_all_fields(self, tmp_path: Path) -> None:
         dataset = _make_dataset()
-        converter = _make_mock_converter()
-        benchmark = Benchmark(dataset=dataset, converter=converter, dataset_dir=None)
+        converter = _GroundTruthConverter(dataset)
+        benchmark = Benchmark(dataset=dataset, converter=converter, dataset_dir=tmp_path)
 
         report = benchmark.run()
         assert hasattr(report, "emotion_accuracy")
@@ -265,7 +277,18 @@ class TestBenchmarkRun:
         assert hasattr(report, "pause_f1")
         assert hasattr(report, "validity_rate")
         assert hasattr(report, "num_samples")
+        assert hasattr(report, "num_failures")
         assert hasattr(report, "duration_seconds")
+
+    def test_requires_dataset_dir(self) -> None:
+        """Upstream no longer scores ground truth against itself without audio."""
+        dataset = _make_dataset()
+        with pytest.raises(ValueError, match="dataset_dir"):
+            Benchmark(
+                dataset=dataset,
+                converter=_GroundTruthConverter(dataset),
+                dataset_dir=None,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -339,8 +362,7 @@ class TestDatasetLoaderValidation:
             "consent": True,
         }
         result = loader.validate_entry(entry_dict)
-        assert isinstance(result, IMLValidator) or isinstance(result, object)
-        # validate_entry returns a ValidationResult
+        assert isinstance(result, ValidationResult)
         assert hasattr(result, "valid")
 
     def test_missing_consent_fails(self) -> None:

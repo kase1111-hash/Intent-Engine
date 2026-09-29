@@ -281,7 +281,7 @@ class IntentEngine:
 
         # Cache result
         if use_cache:
-            self._cache_put(cache_key, result)  # type: ignore[possibly-undefined]
+            self._cache_put(cache_key, result)
 
         return result
 
@@ -598,7 +598,7 @@ class IntentEngine:
             profile_version=profile_version,
             user_id=user_id,
             description=description,
-            mappings=pp_mappings,
+            mappings=tuple(pp_mappings),
         )
 
     def validate_profile(self, profile: ProsodyProfile) -> ValidationResult:

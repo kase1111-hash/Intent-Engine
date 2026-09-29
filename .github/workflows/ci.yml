@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  # prosody-protocol is not published to PyPI yet (see its CHANGELOG), so it is
+  # installed from GitHub before this package. The commit is pinned so upstream
+  # changes cannot break CI unannounced; bump it deliberately after re-running
+  # the checks against the new commit.
+  PROSODY_PROTOCOL: "prosody-protocol[audio] @ git+https://github.com/kase1111-hash/Prosody-Protocol.git@4d4f0bb930b33f5d66015f8565a87e16c02e5fe2"
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -20,6 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install "$PROSODY_PROTOCOL"
           pip install -e ".[dev]"
 
       - name: Lint with ruff
@@ -46,6 +54,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install "$PROSODY_PROTOCOL"
           pip install -e ".[dev]"
 
       - name: Run tests with coverage
@@ -76,6 +85,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install "$PROSODY_PROTOCOL"
           pip install -e ".[dev]"
           pip install pip-audit
 
