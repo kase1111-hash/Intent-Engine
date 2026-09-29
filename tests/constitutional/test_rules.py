@@ -20,7 +20,7 @@ SAMPLE_RULES_PATH = Path(__file__).parent / "sample_rules.yaml"
 class TestProsodyCondition:
     def test_default_values(self) -> None:
         cond = ProsodyCondition()
-        assert cond.emotion == []
+        assert cond.emotion == ()
         assert cond.pitch_variance is None
         assert cond.speaking_rate is None
 
@@ -30,7 +30,7 @@ class TestProsodyCondition:
             pitch_variance="low",
             speaking_rate=(2.0, 5.0),
         )
-        assert cond.emotion == ["sincere", "calm"]
+        assert cond.emotion == ("sincere", "calm")
         assert cond.pitch_variance == "low"
         assert cond.speaking_rate == (2.0, 5.0)
 
@@ -61,7 +61,7 @@ class TestConstitutionalRule:
     def test_minimal_rule(self) -> None:
         rule = ConstitutionalRule(name="test")
         assert rule.name == "test"
-        assert rule.triggers == []
+        assert rule.triggers == ()
         assert rule.required_prosody is None
         assert rule.forbidden_prosody is None
         assert rule.verification is None
@@ -162,7 +162,7 @@ class TestParseRulesYaml:
             rules = parse_rules_yaml(f.name)
             assert len(rules) == 1
             assert rules[0].name == "simple"
-            assert rules[0].triggers == ["test"]
+            assert rules[0].triggers == ("test",)
             assert rules[0].required_prosody is None
             assert rules[0].forbidden_prosody is None
             assert rules[0].verification is None
