@@ -178,7 +178,14 @@ class IntentEngine:
 
         # Optional constitutional filter
         self._filter: ConstitutionalFilter | None = None
-        if constitutional_rules:
+        if constitutional_rules is not None:
+            if not constitutional_rules.strip():
+                # An unset environment variable expands to "": failing here
+                # beats running without the safety filter.
+                raise ValueError(
+                    "constitutional_rules must be a path to a YAML rules file, "
+                    "not an empty string (pass None to run without the filter)"
+                )
             self._filter = ConstitutionalFilter.from_yaml(constitutional_rules)
 
         # Event loop of the *_sync wrappers, started on first use
@@ -532,6 +539,9 @@ class IntentEngine:
         prosody_features: list[SpanFeatures],
         emotion: str | None = None,
         context: dict[str, object] | None = None,
+        *,
+        emotion_confidence: float | None = None,
+        min_emotion_confidence: float = 0.5,
     ) -> Decision:
         """Evaluate an intent through the constitutional filter.
 
@@ -545,17 +555,54 @@ class IntentEngine:
             Detected emotion label.
         context:
             Optional context dict.
+        emotion_confidence:
+            Confidence of *emotion*. Below *min_emotion_confidence* the
+            emotion counts as unknown, which fails any required emotion
+            list. Pass ``Result.confidence``: the ``("neutral", 0.0)`` that
+            means "no emotion reported" is then not mistaken for a calm
+            speaker. Prefer :meth:`evaluate_result`.
+        min_emotion_confidence:
+            Confidence needed for *emotion* to count as evidence.
 
         Returns
         -------
         Decision
-            Whether the action is allowed.
+            Whether the action is allowed. Without a constitutional filter
+            (no ``constitutional_rules``) every action is allowed.
         """
         if self._filter is None:
             return Decision(allow=True)
 
         return self._filter.evaluate(
-            intent, prosody_features, emotion=emotion, context=context
+            intent,
+            prosody_features,
+            emotion=emotion,
+            context=context,
+            emotion_confidence=emotion_confidence,
+            min_emotion_confidence=min_emotion_confidence,
+        )
+
+    def evaluate_result(
+        self,
+        intent: str,
+        result: Result,
+        context: dict[str, object] | None = None,
+    ) -> Decision:
+        """Evaluate *intent* against the prosody and emotion in *result*.
+
+        The usual way to gate an action: pass the intent the LLM parsed
+        (``Response.intent``) and the :class:`Result` of the same turn.
+        The emotion is only evidence when the assembler reported it with
+        enough confidence, so a single-utterance turn (no emotion reported)
+        fails a rule that requires a particular emotion and needs
+        verification rather than being allowed.
+        """
+        return self.evaluate_intent(
+            intent,
+            result.prosody_features,
+            emotion=result.emotion,
+            context=context,
+            emotion_confidence=result.confidence,
         )
 
     @staticmethod
