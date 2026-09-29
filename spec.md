@@ -416,7 +416,7 @@ The LLM receives a system prompt (`SYSTEM_PROMPT` in `intent_engine/llm/prompts.
 
 | Provider | Extra | Defaults |
 |---|---|---|
-| `claude` | `claude` (`anthropic>=0.40`) | `model="claude-sonnet-5-5"`, `max_tokens=8192`; no `temperature` is sent unless you set one |
+| `claude` | `claude` (`anthropic>=0.40`) | `model=` (set it explicitly; see the adapter default), `max_tokens=8192`; no `temperature` is sent unless you set one |
 | `openai` | `openai` (`openai>=1.56`) | `model="gpt-4o"`, `max_tokens=1024`, `temperature=0.3` |
 | `local` | `local-llm` (`llama-cpp-python`) for `model_path`, or `openai` for `base_url` | `model="llama3"` (server), `n_ctx=4096`, `max_tokens=1024`, `temperature=0.3`; needs `model_path` (a GGUF file) or `base_url` |
 

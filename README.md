@@ -510,7 +510,7 @@ print(interpretation.intent, "|", interpretation.suggested_emotion)
 print(interpretation.response_text)
 ```
 
-Adapters take their model as a setting (`llm_kwargs={"model": ...}`): `claude` defaults to `claude-sonnet-5-5`, `openai` to `gpt-4o`. The `local` provider needs `model_path` (a GGUF file for llama.cpp) or `base_url` (an OpenAI-compatible server such as Ollama at `http://localhost:11434/v1`) and, for a server, `model`.
+Adapters take their model as a setting (`llm_kwargs={"model": ...}`): each adapter has a default (see its `model` parameter in `intent_engine/llm/`), and the default may be out of date for the API you use, so set `model` explicitly. The `local` provider needs `model_path` (a GGUF file for llama.cpp) or `base_url` (an OpenAI-compatible server such as Ollama at `http://localhost:11434/v1`) and, for a server, `model`.
 
 ### TTS Module
 
