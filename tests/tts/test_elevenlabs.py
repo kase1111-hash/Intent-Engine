@@ -3,15 +3,51 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
+import threading
+import time
 import types
+from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from intent_engine.tts.base import SynthesisResult, TTSProvider
+from intent_engine.tts.base import EMOTION_VOICE_MAP, SynthesisResult, TTSProvider
 from intent_engine.tts.elevenlabs import ELEVENLABS_EMOTION_SETTINGS, ElevenLabsTTS
+from tests.tts.helpers import SDK_OUTPUT_FORMATS, Heartbeat
+
+
+class StubClient:
+    """Minimal ``ElevenLabs`` client whose ``convert`` behaves like the SDK's.
+
+    The SDK's ``text_to_speech.convert`` is a generator function: calling it
+    does nothing, and the HTTP request happens while the result is iterated.
+    """
+
+    def __init__(self, chunks: tuple[bytes, ...] = (b"audio",), delay: float = 0.0) -> None:
+        self.chunks = chunks
+        self.delay = delay
+        self.calls: list[dict[str, object]] = []
+        self.iterated_on: list[threading.Thread] = []
+        self.text_to_speech = types.SimpleNamespace(convert=self._convert)
+
+    def _convert(self, **kwargs: object) -> Iterator[bytes]:
+        self.calls.append(kwargs)
+        self.iterated_on.append(threading.current_thread())
+        time.sleep(self.delay)  # the network round trip
+        yield from self.chunks
+
+
+@pytest.fixture()
+def stub_sdk(monkeypatch: pytest.MonkeyPatch) -> StubClient:
+    """Install a fake ``elevenlabs`` package handing out one StubClient."""
+    client = StubClient()
+    module = types.ModuleType("elevenlabs")
+    module.ElevenLabs = lambda **kwargs: client  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "elevenlabs", module)
+    return client
 
 
 class TestElevenLabsTTSConstruction:
@@ -177,3 +213,103 @@ class TestElevenLabsTTSSynthesize:
             assert voice_settings["stability"] == expected["stability"]
         finally:
             sys.modules.pop("elevenlabs", None)
+
+
+class TestElevenLabsEmotionLookup:
+    def test_settings_cover_exactly_the_voice_map_vocabulary(self) -> None:
+        assert set(ELEVENLABS_EMOTION_SETTINGS) == set(EMOTION_VOICE_MAP)
+
+    @pytest.mark.parametrize("raw", ["Angry", " ANGRY ", "angry\n"])
+    async def test_case_and_whitespace_are_ignored(
+        self, raw: str, stub_sdk: StubClient
+    ) -> None:
+        await ElevenLabsTTS(api_key="k").synthesize("Hi", emotion=raw)
+        settings = stub_sdk.calls[0]["voice_settings"]
+        assert settings["style"] == ELEVENLABS_EMOTION_SETTINGS["angry"]["style"]  # type: ignore[index]
+
+    @pytest.mark.parametrize("raw", [None, ["calm"], {"a": 1}, 3, b"sad", "excited"])
+    async def test_unusable_values_use_neutral_settings(
+        self, raw: object, stub_sdk: StubClient
+    ) -> None:
+        await ElevenLabsTTS(api_key="k").synthesize("Hi", emotion=raw)  # type: ignore[arg-type]
+        settings = stub_sdk.calls[0]["voice_settings"]
+        neutral = ELEVENLABS_EMOTION_SETTINGS["neutral"]
+        assert settings["stability"] == neutral["stability"]  # type: ignore[index]
+        assert settings["style"] == neutral["style"]  # type: ignore[index]
+
+
+class TestElevenLabsOutputFormat:
+    """``SynthesisResult`` must describe the bytes that were requested."""
+
+    @pytest.mark.parametrize(("output_format", "expected"), sorted(SDK_OUTPUT_FORMATS.items()))
+    async def test_result_matches_requested_format(
+        self, output_format: str, expected: tuple[str, int], stub_sdk: StubClient
+    ) -> None:
+        tts = ElevenLabsTTS(api_key="k", output_format=output_format)
+        result = await tts.synthesize("Hello")
+        assert (result.format, result.sample_rate) == expected
+        assert stub_sdk.calls[0]["output_format"] == output_format
+
+    async def test_default_format_is_unchanged(self, stub_sdk: StubClient) -> None:
+        result = await ElevenLabsTTS(api_key="k").synthesize("Hello")
+        assert (result.format, result.sample_rate) == ("mp3", 44100)
+
+    @pytest.mark.parametrize("output_format", ["", "mystery", "pcm", "pcm_fast", "MP3_44100_128"])
+    async def test_unrecognised_format_warns_and_still_synthesizes(
+        self,
+        output_format: str,
+        stub_sdk: StubClient,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="intent_engine.tts.elevenlabs"):
+            tts = ElevenLabsTTS(api_key="k", output_format=output_format)
+        assert "output_format" in caplog.text
+        result = await tts.synthesize("Hello")
+        assert result.audio_data == b"audio"
+
+    def test_recognised_format_does_not_warn(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="intent_engine.tts.elevenlabs"):
+            ElevenLabsTTS(api_key="k", output_format="pcm_16000")
+        assert caplog.text == ""
+
+
+class TestElevenLabsEventLoop:
+    async def test_request_runs_off_the_event_loop_thread(self, stub_sdk: StubClient) -> None:
+        await ElevenLabsTTS(api_key="k").synthesize("Hello")
+        # convert() is a generator: the request happens when it is iterated
+        assert len(stub_sdk.iterated_on) == 1
+        assert stub_sdk.iterated_on[0] is not threading.main_thread()
+
+    async def test_event_loop_stays_responsive_during_the_request(
+        self, stub_sdk: StubClient
+    ) -> None:
+        stub_sdk.delay = 0.3
+        async with Heartbeat() as heartbeat:
+            result = await ElevenLabsTTS(api_key="k").synthesize("Hello")
+        assert result.audio_data == b"audio"
+        assert heartbeat.ticks >= 5
+
+    async def test_chunks_are_joined_in_order(self, stub_sdk: StubClient) -> None:
+        stub_sdk.chunks = (b"one", b"", b"two", b"three")
+        result = await ElevenLabsTTS(api_key="k").synthesize("Hello")
+        assert result.audio_data == b"onetwothree"
+
+    async def test_sdk_errors_propagate(self, stub_sdk: StubClient) -> None:
+        def failing(**kwargs: object) -> Iterator[bytes]:
+            raise RuntimeError("401 unauthorized")
+            yield b""  # pragma: no cover - makes this a generator like the SDK's
+
+        stub_sdk.text_to_speech.convert = failing  # type: ignore[assignment]
+        with pytest.raises(RuntimeError, match="401 unauthorized"):
+            await ElevenLabsTTS(api_key="k").synthesize("Hello")
+
+
+class TestElevenLabsMarkup:
+    def test_does_not_claim_ssml_support(self) -> None:
+        assert ElevenLabsTTS(api_key="k").supports_ssml is False
+
+    async def test_text_is_sent_verbatim(self, stub_sdk: StubClient) -> None:
+        # ElevenLabs takes its own inline tags (<break/>), so nothing is rewritten.
+        text = 'Wait <break time="1.0s" /> for it'
+        await ElevenLabsTTS(api_key="k").synthesize(text)
+        assert stub_sdk.calls[0]["text"] == text

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 
 import pytest
 
@@ -12,6 +14,8 @@ from intent_engine.tts.base import (
     SynthesisResult,
     TTSProvider,
     get_voice_params,
+    normalize_emotion,
+    strip_ssml,
 )
 
 
@@ -143,3 +147,129 @@ class TestTTSProviderInterface:
         )
         assert isinstance(result, SynthesisResult)
         assert result.audio_data == b"audio"
+
+
+class TestEmotionNormalisation:
+    """``get_voice_params`` must never crash on what an LLM hands back."""
+
+    @pytest.mark.parametrize("raw", ["Sad", "SAD", " sad ", "sad\n", "\tSad  "])
+    def test_case_and_whitespace_are_normalised(self, raw: str) -> None:
+        assert get_voice_params(raw) is EMOTION_VOICE_MAP["sad"]
+        assert normalize_emotion(raw) == "sad"
+
+    @pytest.mark.parametrize("emotion", sorted(EMOTION_VOICE_MAP))
+    def test_every_core_label_is_kept(self, emotion: str) -> None:
+        assert normalize_emotion(emotion) == emotion
+        assert get_voice_params(emotion.upper()) is EMOTION_VOICE_MAP[emotion]
+
+    @pytest.mark.parametrize(
+        "raw",
+        [None, ["calm"], {"emotion": "calm"}, 5, 1.5, b"sad", ("sad",), object(), True],
+    )
+    def test_non_string_values_fall_back_to_neutral(self, raw: object) -> None:
+        assert get_voice_params(raw) is EMOTION_VOICE_MAP["neutral"]
+        assert normalize_emotion(raw) == "neutral"
+
+    @pytest.mark.parametrize("raw", ["", "   ", "excited", "warm", "stressed", "sad."])
+    def test_unknown_labels_fall_back_to_neutral(self, raw: str) -> None:
+        assert get_voice_params(raw) is EMOTION_VOICE_MAP["neutral"]
+
+    def test_unknown_label_is_reported(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="intent_engine.tts.base"):
+            normalize_emotion("excited")
+        assert "excited" in caplog.text
+        assert "neutral" in caplog.text
+
+    def test_non_string_value_is_reported_by_type(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="intent_engine.tts.base"):
+            normalize_emotion(["calm"])
+        assert "list" in caplog.text
+
+    @pytest.mark.parametrize("raw", ["neutral", "Sad", None, ""])
+    def test_no_warning_for_known_or_absent_emotion(
+        self, raw: str | None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="intent_engine.tts.base"):
+            normalize_emotion(raw)
+        assert caplog.text == ""
+
+    def test_overlong_unknown_label_is_truncated_in_the_log(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="intent_engine.tts.base"):
+            normalize_emotion("x" * 5000)
+        assert len(caplog.text) < 500
+
+
+class TestStripSSML:
+    WRAPPED = (
+        '<speak version="1.1" xmlns="http://www.w3.org/2001/10/synthesis" '
+        'xml:lang="en-US"><s><prosody pitch="+5%" volume="+3dB">I am so happy!'
+        "</prosody></s></speak>"
+    )
+
+    def test_wrapped_document_becomes_plain_text(self) -> None:
+        assert strip_ssml(self.WRAPPED) == "I am so happy!"
+
+    def test_sentences_and_breaks_keep_word_boundaries(self) -> None:
+        ssml = (
+            '<speak xml:lang="en-US"><s>Hello <break time="300ms"/>there</s>'
+            '<s>Second <emphasis level="strong">one</emphasis></s></speak>'
+        )
+        assert strip_ssml(ssml) == "Hello there Second one"
+
+    def test_inline_tags_do_not_split_words(self) -> None:
+        ssml = "<speak><s>un<emphasis>believ</emphasis>able</s></speak>"
+        assert strip_ssml(ssml) == "unbelievable"
+
+    def test_entities_are_decoded(self) -> None:
+        assert strip_ssml("<speak><s>Tom &amp; Jerry &lt;3</s></speak>") == "Tom & Jerry <3"
+
+    def test_surrounding_whitespace_and_xml_declaration(self) -> None:
+        ssml = '  <?xml version="1.0"?>\n<speak><s>Hi</s></speak>\n'
+        assert strip_ssml(ssml) == "Hi"
+
+    def test_empty_document_gives_empty_string(self) -> None:
+        assert strip_ssml('<speak xml:lang="en-US"><s></s></speak>') == ""
+
+    @pytest.mark.parametrize(
+        "body",
+        ["<" * 100_000, "<a" * 100_000, "<>" * 50_000, " <" * 50_000],
+        ids=["lt", "lt-letter", "lt-gt", "space-lt"],
+    )
+    def test_adversarial_input_is_handled_in_linear_time(self, body: str) -> None:
+        # Unmatched "<" runs took seconds (quadratic) with a naive tag pattern.
+        start = time.perf_counter()
+        strip_ssml("<speak>" + body + "</speak>")
+        assert time.perf_counter() - start < 1.0
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Hello world",
+            "",
+            "if a < b and c > d",
+            "<b>bold</b> is not SSML",
+            "Say <speak> to start",
+            "<speak>unterminated",
+            "prefix <speak><s>Hi</s></speak>",
+        ],
+    )
+    def test_anything_else_is_returned_unchanged(self, text: str) -> None:
+        assert strip_ssml(text) == text
+
+
+class TestSSMLSupportFlag:
+    def test_base_provider_does_not_claim_ssml(self) -> None:
+        assert TTSProvider.supports_ssml is False
+
+    def test_concrete_provider_inherits_default(self) -> None:
+        class ConcreteTTS(TTSProvider):
+            async def synthesize(
+                self, text: str, emotion: str = "neutral", **kwargs: object
+            ) -> SynthesisResult:
+                return SynthesisResult(audio_data=b"audio")
+
+        assert ConcreteTTS().supports_ssml is False

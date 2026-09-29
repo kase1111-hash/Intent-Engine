@@ -22,6 +22,8 @@ from intent_engine.tts.base import (
     SynthesisResult,
     TTSProvider,
     get_voice_params,
+    normalize_emotion,
+    strip_ssml,
 )
 
 __all__ = [
@@ -30,6 +32,8 @@ __all__ = [
     "EmotionVoiceParams",
     "EMOTION_VOICE_MAP",
     "get_voice_params",
+    "normalize_emotion",
+    "strip_ssml",
     "TTS_PROVIDERS",
     "create_tts_provider",
 ]
