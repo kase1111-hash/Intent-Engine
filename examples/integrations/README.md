@@ -27,7 +27,7 @@ The modules are named `*_voice`, `*_bot` and `rest_server` on purpose: a file ca
 
 ## Installing dependencies
 
-The examples need packages that `intent-engine` does not depend on. Install what the example you use needs, on top of `pip install -e ".[dev]"` (or your normal install of `intent-engine`):
+The examples need packages that `intent-engine` does not depend on. Install what the example you use needs, on top of `pip install -e ".[dev]"` (or your normal install of `intent-engine`), or install all of them with the `examples` extra (`pip install -e ".[examples]"`). `prosody-protocol` is not on PyPI, so `prosody-protocol[api]` below only resolves once it has been installed from GitHub, as [CONTRIBUTING.md](../../CONTRIBUTING.md) shows (installing `intent-engine` needs that anyway):
 
 | Example | Packages |
 |---------|----------|
@@ -46,9 +46,9 @@ pip install httpx slack_sdk
 pip install httpx discord.py
 ```
 
-The examples call `IntentEngine()`, so the engine's own providers must be installed and configured too. The defaults are Whisper for STT, Claude for the LLM and ElevenLabs for TTS: `pip install "intent-engine[whisper,claude,elevenlabs]"` with `ANTHROPIC_API_KEY` and `ELEVENLABS_API_KEY` set. Pass other providers to `IntentEngine(...)` (or set `INTENT_STT_PROVIDER`, `INTENT_LLM_PROVIDER`, `INTENT_TTS_PROVIDER` for the REST server).
+The examples call `IntentEngine()`, so the engine's own providers must be installed and configured too. The defaults are Whisper for STT, Claude for the LLM and ElevenLabs for TTS: `pip install -e ".[whisper,claude,elevenlabs]"` with `ANTHROPIC_API_KEY` and `ELEVENLABS_API_KEY` set. Pass other providers to `IntentEngine(...)` (or set `INTENT_STT_PROVIDER`, `INTENT_LLM_PROVIDER`, `INTENT_TTS_PROVIDER` for the REST server).
 
-**ffmpeg.** WAV, AIFF, FLAC and MP3 are decoded directly. Ogg/Opus (Discord voice messages), WebM and M4A (common Slack clips) need `ffmpeg` on `PATH`; without it those clips fail with a generic "could not process" reply and the reason in the log.
+**ffmpeg.** `prosody_protocol` reads WAV, AIFF, FLAC and MP3 itself; Ogg/Opus (Discord voice messages), WebM and M4A (common Slack clips) need `ffmpeg` on `PATH`. The default Whisper STT provider (`openai-whisper`) runs `ffmpeg` to load every file, so with it install ffmpeg whatever the format; without it the examples answer with their generic failure reply and the reason is only in the log. With a cloud STT provider and no ffmpeg, an Ogg, WebM or M4A clip is still transcribed, but its prosody cannot be analysed: the turn continues with text-only IML and no emotion, and a warning goes to the log.
 
 ## REST server
 
@@ -62,6 +62,7 @@ INTENT_API_KEY=change-me \
 ```python
 from examples.integrations.rest_server import create_app
 
+# reads DEEPGRAM_API_KEY, ANTHROPIC_API_KEY and ELEVENLABS_API_KEY from the environment
 app = create_app(stt_provider="deepgram", llm_provider="claude", api_key="change-me")
 ```
 
@@ -135,8 +136,8 @@ The Slack and Discord examples post a named user's transcript and the emotion in
 ## Tests
 
 ```bash
-pip install -e ".[dev]"
+# after the setup in CONTRIBUTING.md (make dev)
 pytest examples
 ```
 
-Tests that need an optional package (`fastapi`, `httpx`, `twilio`, `slack_sdk`, `discord.py`, `uvicorn`) skip when it is not installed; everything runs against stub engines and in-process fake HTTP transports, so no provider API key or network access is needed. `pytest examples` is separate from the package's own `pytest` run, which only collects `tests/`.
+Tests that need an optional package (`fastapi`, `httpx`, `twilio`, `slack_sdk`, `discord.py`, `uvicorn`) skip when it is not installed; everything runs against stub engines and in-process fake HTTP transports, so no provider API key or network access is needed. Plain `pytest` (and `make test`) collects `tests/` and `examples/` together; `pytest examples` runs just these.
