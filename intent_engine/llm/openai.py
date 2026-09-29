@@ -8,13 +8,16 @@ or explicit ``api_key`` parameter.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-from typing import Any
 
-from intent_engine.llm.base import InterpretationResult, LLMProvider
-from intent_engine.llm.prompts import SYSTEM_PROMPT
+from intent_engine.llm.base import (
+    InterpretationResult,
+    LLMProvider,
+    chat_completion_text,
+    parse_interpretation,
+)
+from intent_engine.llm.prompts import PROMPT_VERSION, SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -51,15 +54,6 @@ class OpenAILLM(LLMProvider):
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature
-        self._client: Any = None
-
-    def _get_client(self) -> Any:
-        """Return a reusable async client, creating it on first call."""
-        if self._client is None:
-            from openai import AsyncOpenAI
-
-            self._client = AsyncOpenAI(api_key=self._api_key)
-        return self._client
 
     async def interpret(
         self, iml_input: str, context: str | None = None
@@ -77,9 +71,14 @@ class OpenAILLM(LLMProvider):
         -------
         InterpretationResult
             The parsed intent, response text, and suggested emotion.
+
+        Raises
+        ------
+        intent_engine.errors.LLMError
+            If the model refuses or does not reply with the expected JSON.
         """
         try:
-            client = self._get_client()
+            from openai import AsyncOpenAI
         except ImportError as exc:
             raise ImportError(
                 "openai is required for OpenAILLM. "
@@ -90,37 +89,24 @@ class OpenAILLM(LLMProvider):
         if context:
             system = f"{system}\n\n## Additional Context\n{context}"
 
-        response = await client.chat.completions.create(
-            model=self._model,
-            max_tokens=self._max_tokens,
-            temperature=self._temperature,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": iml_input},
-            ],
-        )
+        # The client is opened per call: the sync wrappers run every call in a
+        # fresh event loop (asyncio.run), and a client keeps its connections
+        # bound to the loop that first used it.
+        async with AsyncOpenAI(api_key=self._api_key) as client:
+            response = await client.chat.completions.create(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                temperature=self._temperature,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": iml_input},
+                ],
+            )
 
-        raw_text = response.choices[0].message.content or ""
-
-        try:
-            parsed = json.loads(raw_text)
-        except json.JSONDecodeError as exc:
-            from intent_engine.errors import LLMError
-
-            raise LLMError(
-                f"OpenAI returned non-JSON response: {raw_text[:200]}"
-            ) from exc
+        result = parse_interpretation(chat_completion_text(response, "OpenAI"), "OpenAI")
 
         logger.info(
-            "OpenAI interpreted intent=%s emotion=%s (model=%s)",
-            parsed.get("intent"),
-            parsed.get("suggested_emotion"),
-            self._model,
+            "OpenAI interpreted a turn (model=%s, prompt=%s)", self._model, PROMPT_VERSION
         )
-
-        return InterpretationResult(
-            intent=parsed["intent"],
-            response_text=parsed["response_text"],
-            suggested_emotion=parsed["suggested_emotion"],
-        )
+        return result

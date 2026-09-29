@@ -12,12 +12,16 @@ No external API key required -- everything runs on the local machine.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
-from intent_engine.llm.base import InterpretationResult, LLMProvider
-from intent_engine.llm.prompts import SYSTEM_PROMPT
+from intent_engine.llm.base import (
+    InterpretationResult,
+    LLMProvider,
+    chat_completion_text,
+    parse_interpretation,
+)
+from intent_engine.llm.prompts import PROMPT_VERSION, SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +75,6 @@ class LocalLLM(LLMProvider):
         self._max_tokens = max_tokens
         self._temperature = temperature
         self._llama: Any = None
-        self._server_client: Any = None
 
     def _load_llama(self) -> Any:
         """Lazily load the llama.cpp model on first use."""
@@ -113,6 +116,11 @@ class LocalLLM(LLMProvider):
         -------
         InterpretationResult
             The parsed intent, response text, and suggested emotion.
+
+        Raises
+        ------
+        intent_engine.errors.LLMError
+            If the model does not reply with the expected JSON.
         """
         system = SYSTEM_PROMPT
         if context:
@@ -138,79 +146,52 @@ class LocalLLM(LLMProvider):
             response_format={"type": "json_object"},
         )
 
-        raw_text = response["choices"][0]["message"]["content"] or ""
-
-        try:
-            parsed = json.loads(raw_text)
-        except json.JSONDecodeError as exc:
-            from intent_engine.errors import LLMError
-
-            raise LLMError(
-                f"llama.cpp returned non-JSON response: {raw_text[:200]}"
-            ) from exc
+        result = parse_interpretation(
+            chat_completion_text(response, "llama.cpp"), "llama.cpp"
+        )
 
         logger.info(
-            "llama.cpp interpreted intent=%s emotion=%s (model=%s)",
-            parsed.get("intent"),
-            parsed.get("suggested_emotion"),
+            "llama.cpp interpreted a turn (model=%s, prompt=%s)",
             self._model_path,
+            PROMPT_VERSION,
         )
-
-        return InterpretationResult(
-            intent=parsed["intent"],
-            response_text=parsed["response_text"],
-            suggested_emotion=parsed["suggested_emotion"],
-        )
+        return result
 
     async def _interpret_via_server(
         self, iml_input: str, system: str
     ) -> InterpretationResult:
         """Run inference via an OpenAI-compatible local server."""
-        if self._server_client is None:
-            try:
-                from openai import AsyncOpenAI
-            except ImportError as exc:
-                raise ImportError(
-                    "openai is required for LocalLLM with base_url. "
-                    "Install it with: pip install intent-engine[openai]"
-                ) from exc
-
-            self._server_client = AsyncOpenAI(
-                api_key="not-needed", base_url=self._base_url
-            )
-
-        response = await self._server_client.chat.completions.create(
-            model=self._model,
-            max_tokens=self._max_tokens,
-            temperature=self._temperature,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": iml_input},
-            ],
-        )
-
-        raw_text = response.choices[0].message.content or ""
-
         try:
-            parsed = json.loads(raw_text)
-        except json.JSONDecodeError as exc:
-            from intent_engine.errors import LLMError
-
-            raise LLMError(
-                f"Local server returned non-JSON response: {raw_text[:200]}"
+            from openai import AsyncOpenAI
+        except ImportError as exc:
+            raise ImportError(
+                "openai is required for LocalLLM with base_url. "
+                "Install it with: pip install intent-engine[openai]"
             ) from exc
 
-        logger.info(
-            "Local server interpreted intent=%s emotion=%s (model=%s, url=%s)",
-            parsed.get("intent"),
-            parsed.get("suggested_emotion"),
-            self._model,
-            self._base_url,
+        # The client is opened per call: the sync wrappers run every call in a
+        # fresh event loop (asyncio.run), and a client keeps its connections
+        # bound to the loop that first used it.
+        async with AsyncOpenAI(api_key="not-needed", base_url=self._base_url) as client:
+            response = await client.chat.completions.create(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                temperature=self._temperature,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": iml_input},
+                ],
+            )
+
+        result = parse_interpretation(
+            chat_completion_text(response, "Local server"), "Local server"
         )
 
-        return InterpretationResult(
-            intent=parsed["intent"],
-            response_text=parsed["response_text"],
-            suggested_emotion=parsed["suggested_emotion"],
+        logger.info(
+            "Local server interpreted a turn (model=%s, url=%s, prompt=%s)",
+            self._model,
+            self._base_url,
+            PROMPT_VERSION,
         )
+        return result

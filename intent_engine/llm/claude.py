@@ -8,13 +8,13 @@ Requires an ``ANTHROPIC_API_KEY`` environment variable or explicit
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from typing import Any
 
-from intent_engine.llm.base import InterpretationResult, LLMProvider
-from intent_engine.llm.prompts import SYSTEM_PROMPT
+from intent_engine.errors import LLMError
+from intent_engine.llm.base import InterpretationResult, LLMProvider, parse_interpretation
+from intent_engine.llm.prompts import PROMPT_VERSION, SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -28,19 +28,27 @@ class ClaudeLLM(LLMProvider):
         Anthropic API key.  Falls back to the ``ANTHROPIC_API_KEY``
         environment variable if not provided.
     model:
-        Claude model to use (e.g., ``"claude-sonnet-4-20250514"``).
+        Claude model to use (e.g., ``"claude-sonnet-5-5"``).
     max_tokens:
-        Maximum tokens in the response.
+        Maximum tokens in the response.  Current Claude models think
+        before they answer and the thinking counts towards this limit,
+        so a small limit can be used up by the thinking and truncate the
+        JSON reply (reported as an ``LLMError``).  The default is the
+        most the SDK allows without streaming for every model.
     temperature:
-        Sampling temperature (0.0-1.0).
+        Optional sampling temperature.  Current ``anthropic`` SDKs
+        (>= 1.0) and current Claude models no longer accept sampling
+        parameters, so nothing is sent unless this is set.  When it is
+        set the value is passed in the request body (``extra_body``),
+        which only works with a model that still accepts it.
     """
 
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "claude-sonnet-4-20250514",
-        max_tokens: int = 1024,
-        temperature: float = 0.3,
+        model: str = "claude-sonnet-5-5",
+        max_tokens: int = 8192,
+        temperature: float | None = None,
         **kwargs: object,
     ) -> None:
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
@@ -51,15 +59,6 @@ class ClaudeLLM(LLMProvider):
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature
-        self._client: Any = None
-
-    def _get_client(self) -> Any:
-        """Return a reusable async client, creating it on first call."""
-        if self._client is None:
-            import anthropic
-
-            self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
-        return self._client
 
     async def interpret(
         self, iml_input: str, context: str | None = None
@@ -77,9 +76,15 @@ class ClaudeLLM(LLMProvider):
         -------
         InterpretationResult
             The parsed intent, response text, and suggested emotion.
+
+        Raises
+        ------
+        intent_engine.errors.LLMError
+            If Claude refuses, is cut off, or does not reply with the
+            expected JSON.
         """
         try:
-            self._get_client()
+            import anthropic
         except ImportError as exc:
             raise ImportError(
                 "anthropic is required for ClaudeLLM. "
@@ -90,36 +95,46 @@ class ClaudeLLM(LLMProvider):
         if context:
             system = f"{system}\n\n## Additional Context\n{context}"
 
-        client = self._get_client()
+        extra: dict[str, Any] = {}
+        if self._temperature is not None:
+            extra["extra_body"] = {"temperature": self._temperature}
 
-        response = await client.messages.create(
-            model=self._model,
-            max_tokens=self._max_tokens,
-            temperature=self._temperature,
-            system=system,
-            messages=[{"role": "user", "content": iml_input}],
+        # The client is opened per call: the sync wrappers run every call in a
+        # fresh event loop (asyncio.run), and a client keeps its connections
+        # bound to the loop that first used it.
+        async with anthropic.AsyncAnthropic(api_key=self._api_key) as client:
+            response = await client.messages.create(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": iml_input}],
+                **extra,
+            )
+
+        stop_reason = getattr(response, "stop_reason", None)
+        if stop_reason == "refusal":
+            raise LLMError("Claude declined to answer (stop_reason=refusal)")
+
+        # Models that think put thinking blocks in front of the text block.
+        raw_text = "".join(
+            block.text
+            for block in response.content
+            if getattr(block, "type", None) == "text"
         )
-
-        raw_text = response.content[0].text
+        if not raw_text.strip():
+            raise LLMError("Claude returned no text content")
 
         try:
-            parsed = json.loads(raw_text)
-        except json.JSONDecodeError as exc:
-            from intent_engine.errors import LLMError
-
-            raise LLMError(
-                f"Claude returned non-JSON response: {raw_text[:200]}"
-            ) from exc
+            result = parse_interpretation(raw_text, "Claude")
+        except LLMError as exc:
+            if stop_reason == "max_tokens":
+                raise LLMError(
+                    f"Claude's reply was cut off at max_tokens={self._max_tokens} "
+                    "(thinking counts towards it); raise max_tokens"
+                ) from exc
+            raise
 
         logger.info(
-            "Claude interpreted intent=%s emotion=%s (model=%s)",
-            parsed.get("intent"),
-            parsed.get("suggested_emotion"),
-            self._model,
+            "Claude interpreted a turn (model=%s, prompt=%s)", self._model, PROMPT_VERSION
         )
-
-        return InterpretationResult(
-            intent=parsed["intent"],
-            response_text=parsed["response_text"],
-            suggested_emotion=parsed["suggested_emotion"],
-        )
+        return result
