@@ -22,20 +22,30 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "prosody-protocol[audio]>=0.1.0a1",
+    "prosody-protocol[audio]>=0.1.0a3",
     "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
-whisper = ["openai-whisper>=20230918", "prosody-protocol[audio]"]
-deepgram = ["deepgram-sdk>=3.0"]
+whisper = ["openai-whisper>=20230918", "prosody-protocol[audio]>=0.1.0a3"]
+deepgram = ["deepgram-sdk>=5,<8"]
 assemblyai = ["assemblyai>=0.20"]
-claude = ["anthropic>=0.30"]
-openai = ["openai>=1.0"]
+claude = ["anthropic>=0.40"]
+openai = ["openai>=1.56"]
 local-llm = ["llama-cpp-python>=0.2"]
-elevenlabs = ["elevenlabs>=0.2"]
-coqui = ["TTS>=0.20"]
-espeak = ["pyttsx3>=2.90"]
+elevenlabs = ["elevenlabs>=1.8.1"]
+coqui = ["coqui-tts>=0.27"]
+espeak = ["pyttsx3>=2.99"]
+examples = [
+    "fastapi>=0.95",
+    "uvicorn>=0.23",
+    "python-multipart>=0.0.9",
+    "httpx>=0.25",
+    "prosody-protocol[api]>=0.1.0a3",
+    "twilio>=8",
+    "slack_sdk>=3.27",
+    "discord.py>=2.3",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
@@ -46,7 +56,7 @@ dev = [
     "pre-commit>=3.0",
 ]
 all = [
-    "intent-engine[whisper,deepgram,assemblyai,claude,openai,local-llm,elevenlabs,coqui,espeak,dev]",
+    "intent-engine[whisper,deepgram,assemblyai,claude,openai,local-llm,elevenlabs,coqui,espeak,examples,dev]",
 ]
 
 [project.urls]
@@ -54,7 +64,7 @@ Repository = "https://github.com/kase1111-hash/Intent-Engine"
 Issues = "https://github.com/kase1111-hash/Intent-Engine/issues"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "examples"]
 addopts = "--strict-markers -v"
 asyncio_mode = "auto"
 
