@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from prosody_protocol import (
     IMLDocument,
-    PauseInterval,
     Segment,
     SpanFeatures,
     Utterance,
@@ -19,7 +18,7 @@ from prosody_protocol import (
 )
 
 from intent_engine.engine import IntentEngine
-from intent_engine.errors import IntentEngineError, LLMError, STTError, TTSError
+from intent_engine.errors import LLMError, STTError, TTSError
 from intent_engine.llm.base import InterpretationResult
 from intent_engine.models.audio import Audio
 from intent_engine.models.decision import Decision
@@ -27,7 +26,6 @@ from intent_engine.models.response import Response
 from intent_engine.models.result import Result
 from intent_engine.stt.base import TranscriptionResult
 from intent_engine.tts.base import SynthesisResult
-
 
 # -- Fixtures and helpers --
 
@@ -53,7 +51,7 @@ def _make_features(
 def _make_iml_doc() -> IMLDocument:
     return IMLDocument(
         utterances=(Utterance(children=(Segment(),)),),
-        version="1.0",
+        version="0.1.0",
     )
 
 

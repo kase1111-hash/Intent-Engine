@@ -6,30 +6,23 @@ sample data for integration and end-to-end tests.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from prosody_protocol import (
     IMLDocument,
-    IMLParser,
     IMLValidator,
     ProsodyMapping,
     ProsodyProfile,
     Segment,
     SpanFeatures,
     Utterance,
-    ValidationResult,
-    WordAlignment,
 )
 
 from intent_engine.engine import IntentEngine
 from intent_engine.llm.base import InterpretationResult
-from intent_engine.models.audio import Audio
-from intent_engine.models.response import Response
-from intent_engine.models.result import Result
 from intent_engine.stt.base import TranscriptionResult
 from intent_engine.tts.base import SynthesisResult
-
 
 # ---------------------------------------------------------------------------
 # IML validation gate
@@ -82,7 +75,7 @@ def make_iml_document() -> IMLDocument:
     """Create a minimal valid IMLDocument."""
     return IMLDocument(
         utterances=(Utterance(children=(Segment(),)),),
-        version="1.0",
+        version="0.1.0",
     )
 
 

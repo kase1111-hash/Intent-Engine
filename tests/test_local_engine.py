@@ -11,14 +11,13 @@ import pytest
 from prosody_protocol import (
     IMLDocument,
     Segment,
-    SpanFeatures,
     Utterance,
     ValidationResult,
 )
 
 from intent_engine.engine import IntentEngine
-from intent_engine.local_engine import HARDWARE_TIERS, LocalEngine, _LOCAL_DEFAULTS
 from intent_engine.llm.base import InterpretationResult
+from intent_engine.local_engine import HARDWARE_TIERS, LocalEngine
 from intent_engine.models.audio import Audio
 from intent_engine.models.response import Response
 from intent_engine.models.result import Result
@@ -213,7 +212,7 @@ class TestLocalEnginePipeline:
         engine._analyzer.detect_pauses = MagicMock(return_value=[])
 
         iml_doc = IMLDocument(
-            utterances=(Utterance(children=(Segment(),)),), version="1.0"
+            utterances=(Utterance(children=(Segment(),)),), version="0.1.0"
         )
         engine._assembler.assemble = MagicMock(return_value=iml_doc)
         engine._parser.to_iml_string = MagicMock(return_value="<iml/>")

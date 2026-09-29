@@ -10,10 +10,10 @@ No API key required -- runs entirely on the local machine.
 
 from __future__ import annotations
 
-import io
 import logging
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from intent_engine.tts.base import (
     SynthesisResult,
@@ -49,10 +49,10 @@ class ESpeakTTS(TTSProvider):
         self._rate_wpm = rate_wpm
         self._volume = volume
 
-    def _create_engine(self) -> object:
+    def _create_engine(self) -> Any:
         """Create a new pyttsx3 engine instance."""
         try:
-            import pyttsx3  # type: ignore[import-untyped]
+            import pyttsx3
         except ImportError as exc:
             raise ImportError(
                 "pyttsx3 is required for ESpeakTTS. "

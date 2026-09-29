@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from intent_engine.llm import LLM_PROVIDERS, LLMProvider, create_llm_provider

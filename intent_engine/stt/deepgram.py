@@ -62,7 +62,7 @@ class DeepgramSTT(STTProvider):
             Transcription with word-level ``WordAlignment`` timestamps.
         """
         try:
-            from deepgram import DeepgramClient, PrerecordedOptions  # type: ignore[import-untyped]
+            from deepgram import DeepgramClient, PrerecordedOptions
         except ImportError as exc:
             raise ImportError(
                 "deepgram-sdk is required for DeepgramSTT. "

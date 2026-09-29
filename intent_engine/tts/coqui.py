@@ -11,6 +11,7 @@ import io
 import logging
 import struct
 import wave
+from typing import Any
 
 from intent_engine.tts.base import (
     SynthesisResult,
@@ -49,13 +50,13 @@ class CoquiTTS(TTSProvider):
         self._device = device
         self._speaker = speaker
         self._language = language
-        self._tts: object | None = None
+        self._tts: Any = None
 
-    def _load_model(self) -> object:
+    def _load_model(self) -> Any:
         """Lazily load the Coqui TTS model on first use."""
         if self._tts is None:
             try:
-                from TTS.api import TTS  # type: ignore[import-untyped]
+                from TTS.api import TTS
             except ImportError as exc:
                 raise ImportError(
                     "TTS (Coqui) is required for CoquiTTS. "
@@ -91,7 +92,7 @@ class CoquiTTS(TTSProvider):
         voice_params = get_voice_params(emotion)
 
         # Coqui TTS tts() returns a list of float samples
-        wav_samples: list[float] = tts.tts(  # type: ignore[union-attr]
+        wav_samples: list[float] = tts.tts(
             text=text,
             speaker=self._speaker,
             language=self._language,

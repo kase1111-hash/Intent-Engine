@@ -13,12 +13,11 @@ import asyncio
 import functools
 import logging
 import os
+from typing import Any
 
 from intent_engine.tts.base import (
-    EMOTION_VOICE_MAP,
     SynthesisResult,
     TTSProvider,
-    get_voice_params,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,7 +76,7 @@ class ElevenLabsTTS(TTSProvider):
         self._voice_id = voice_id
         self._model_id = model_id
         self._output_format = output_format
-        self._client: object | None = None
+        self._client: Any = None
 
     async def synthesize(
         self, text: str, emotion: str = "neutral", **kwargs: object
@@ -98,7 +97,7 @@ class ElevenLabsTTS(TTSProvider):
         """
         if self._client is None:
             try:
-                from elevenlabs import ElevenLabs as ElevenLabsClient  # type: ignore[import-untyped]
+                from elevenlabs import ElevenLabs as ElevenLabsClient
             except ImportError as exc:
                 raise ImportError(
                     "elevenlabs is required for ElevenLabsTTS. "
@@ -116,7 +115,7 @@ class ElevenLabsTTS(TTSProvider):
         audio_iterator = await loop.run_in_executor(
             None,
             functools.partial(
-                self._client.text_to_speech.convert,  # type: ignore[union-attr]
+                self._client.text_to_speech.convert,
                 voice_id=self._voice_id,
                 text=text,
                 model_id=self._model_id,

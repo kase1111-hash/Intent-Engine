@@ -15,23 +15,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from prosody_protocol import (
-    IMLDocument,
     ProsodyMapping,
     ProsodyProfile,
-    Segment,
-    SpanFeatures,
-    Utterance,
     ValidationResult,
 )
 
-from intent_engine.constitutional.rules import ConstitutionalRule, ProsodyCondition, Verification
 from intent_engine.constitutional.filter import ConstitutionalFilter
-from intent_engine.errors import IntentEngineError, LLMError, STTError, TTSError
+from intent_engine.constitutional.rules import ConstitutionalRule, ProsodyCondition, Verification
+from intent_engine.errors import LLMError, STTError, TTSError
 from intent_engine.models.audio import Audio
 from intent_engine.models.response import Response
 from intent_engine.models.result import Result
 from tests.conftest import (
-    assert_valid_iml,
     create_mocked_engine,
     make_iml_document,
     make_interpretation_result,
@@ -131,7 +126,9 @@ class TestFullPipeline:
     def test_full_round_trip(self) -> None:
         """Complete round trip: audio -> process -> generate -> synthesize."""
         engine = create_mocked_engine()
-        _setup_full_pipeline(engine, text="Cancel my subscription", emotion="frustrated", confidence=0.85)
+        _setup_full_pipeline(
+            engine, text="Cancel my subscription", emotion="frustrated", confidence=0.85
+        )
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(b"RIFF fake audio")

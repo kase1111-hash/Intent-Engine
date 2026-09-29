@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from intent_engine.llm.base import InterpretationResult, LLMProvider
 from intent_engine.llm.prompts import SYSTEM_PROMPT
@@ -69,14 +70,14 @@ class LocalLLM(LLMProvider):
         self._n_gpu_layers = n_gpu_layers
         self._max_tokens = max_tokens
         self._temperature = temperature
-        self._llama: object | None = None
-        self._server_client: object | None = None
+        self._llama: Any = None
+        self._server_client: Any = None
 
-    def _load_llama(self) -> object:
+    def _load_llama(self) -> Any:
         """Lazily load the llama.cpp model on first use."""
         if self._llama is None:
             try:
-                from llama_cpp import Llama  # type: ignore[import-untyped]
+                from llama_cpp import Llama
             except ImportError as exc:
                 raise ImportError(
                     "llama-cpp-python is required for LocalLLM with model_path. "
@@ -127,7 +128,7 @@ class LocalLLM(LLMProvider):
         """Run inference using llama.cpp."""
         llama = self._load_llama()
 
-        response = llama.create_chat_completion(  # type: ignore[union-attr]
+        response = llama.create_chat_completion(
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": iml_input},
@@ -137,7 +138,7 @@ class LocalLLM(LLMProvider):
             response_format={"type": "json_object"},
         )
 
-        raw_text = response["choices"][0]["message"]["content"] or ""  # type: ignore[index]
+        raw_text = response["choices"][0]["message"]["content"] or ""
 
         try:
             parsed = json.loads(raw_text)
@@ -167,7 +168,7 @@ class LocalLLM(LLMProvider):
         """Run inference via an OpenAI-compatible local server."""
         if self._server_client is None:
             try:
-                from openai import AsyncOpenAI  # type: ignore[import-untyped]
+                from openai import AsyncOpenAI
             except ImportError as exc:
                 raise ImportError(
                     "openai is required for LocalLLM with base_url. "
@@ -178,7 +179,7 @@ class LocalLLM(LLMProvider):
                 api_key="not-needed", base_url=self._base_url
             )
 
-        response = await self._server_client.chat.completions.create(  # type: ignore[union-attr]
+        response = await self._server_client.chat.completions.create(
             model=self._model,
             max_tokens=self._max_tokens,
             temperature=self._temperature,

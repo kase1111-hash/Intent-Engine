@@ -51,7 +51,7 @@ class TestESpeakTTSEngine:
 
         try:
             tts = ESpeakTTS(voice="english+f3")
-            engine = tts._create_engine()
+            tts._create_engine()
 
             mock_engine.setProperty.assert_called_once_with("voice", "english+f3")
         finally:
@@ -65,7 +65,7 @@ class TestESpeakTTSEngine:
 
         try:
             tts = ESpeakTTS()
-            engine = tts._create_engine()
+            tts._create_engine()
 
             # setProperty should NOT be called for voice when voice is None
             mock_engine.setProperty.assert_not_called()

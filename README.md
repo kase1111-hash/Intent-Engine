@@ -161,11 +161,15 @@ Works with:
 
 ### Installation
 
-```bash
-pip install intent-engine
-```
+[Prosody Protocol](https://github.com/kase1111-hash/Prosody-Protocol) (`prosody-protocol`) provides IML parsing, validation, prosody analysis, and emotion classification. It is not published to PyPI yet, so install it from GitHub first, then install Intent Engine from a checkout:
 
-This installs [Prosody Protocol](https://github.com/kase1111-hash/Prosody-Protocol) (`prosody-protocol`) as a core dependency, which provides IML parsing, validation, prosody analysis, and emotion classification.
+```bash
+pip install "prosody-protocol[audio] @ git+https://github.com/kase1111-hash/Prosody-Protocol.git"
+
+git clone https://github.com/kase1111-hash/Intent-Engine.git
+cd Intent-Engine
+pip install -e .            # add provider extras as needed, e.g. ".[claude,whisper,elevenlabs]"
+```
 
 ### Basic Usage
 
