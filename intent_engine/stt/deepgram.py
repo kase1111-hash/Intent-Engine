@@ -1,19 +1,22 @@
 """Deepgram STT adapter.
 
-Uses the Deepgram SDK to transcribe audio via the Deepgram API.
+Uses the Deepgram SDK (``deepgram-sdk`` 5.x-7.x, ``AsyncDeepgramClient``)
+to transcribe audio via the Deepgram API.
 Requires a ``DEEPGRAM_API_KEY`` environment variable or explicit
 ``api_key`` parameter.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Any
 
-from prosody_protocol import WordAlignment
+from prosody_protocol import ConversionError, WordAlignment
+from prosody_protocol.alignment import from_deepgram
 
+from intent_engine.errors import STTError
 from intent_engine.stt.base import STTProvider, TranscriptionResult
 
 logger = logging.getLogger(__name__)
@@ -60,55 +63,69 @@ class DeepgramSTT(STTProvider):
         -------
         TranscriptionResult
             Transcription with word-level ``WordAlignment`` timestamps.
+
+        Raises
+        ------
+        ImportError
+            If ``deepgram-sdk`` is not installed, or is a version without
+            ``AsyncDeepgramClient`` (before 5.0).
+        FileNotFoundError
+            If *audio_path* does not exist.
+        STTError
+            If the request fails or the response has no usable transcript.
         """
         try:
-            from deepgram import DeepgramClient, PrerecordedOptions
+            from deepgram import AsyncDeepgramClient
         except ImportError as exc:
+            if isinstance(exc, ModuleNotFoundError) and exc.name == "deepgram":
+                raise ImportError(
+                    "deepgram-sdk is required for DeepgramSTT. "
+                    "Install it with: pip install intent-engine[deepgram]"
+                ) from exc
             raise ImportError(
-                "deepgram-sdk is required for DeepgramSTT. "
-                "Install it with: pip install intent-engine[deepgram]"
+                f"The installed deepgram-sdk cannot be used by DeepgramSTT ({exc}). "
+                "It needs deepgram-sdk>=5,<8: pip install -U 'deepgram-sdk>=5,<8'"
             ) from exc
 
         path = Path(audio_path)
         if not path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        client = DeepgramClient(self._api_key)
+        audio = await asyncio.to_thread(path.read_bytes)
+        client = AsyncDeepgramClient(api_key=self._api_key)
+        try:
+            response = await client.listen.v1.media.transcribe_file(
+                request=audio,
+                model=self._model,
+                language=self._language,
+                smart_format=True,
+                utterances=True,
+                punctuate=True,
+            )
+        except Exception as exc:
+            raise STTError(f"Deepgram request failed: {type(exc).__name__}: {exc}") from exc
 
-        buffer_data = path.read_bytes()
-        payload: dict[str, Any] = {"buffer": buffer_data}
+        # A request accepted for callback delivery answers with a request id only.
+        results = getattr(response, "results", None)
+        if results is None:
+            raise STTError(
+                "Deepgram returned no transcription results "
+                "(was the request accepted for asynchronous processing?)"
+            )
 
-        options = PrerecordedOptions(
-            model=self._model,
-            language=self._language,
-            smart_format=True,
-            utterances=True,
-            punctuate=True,
-        )
+        channels = getattr(results, "channels", None) or []
+        channel = channels[0] if channels else None
+        alternatives = getattr(channel, "alternatives", None) or []
+        alternative = alternatives[0] if alternatives else None
+        text: str = getattr(alternative, "transcript", None) or ""
+        detected_language: str | None = getattr(channel, "detected_language", None)
 
-        response = client.listen.rest.v("1").transcribe_file(payload, options)
-
-        text = ""
         alignments: list[WordAlignment] = []
-        detected_language: str | None = None
-
-        results = response.get("results", {})
-        channels = results.get("channels", [])
-        if channels:
-            channel = channels[0]
-            detected_language = channel.get("detected_language")
-            alternatives = channel.get("alternatives", [])
-            if alternatives:
-                text = alternatives[0].get("transcript", "")
-                for word_info in alternatives[0].get("words", []):
-                    word_text: str = word_info.get("word", "").strip()
-                    if not word_text:
-                        continue
-                    start_ms = int(word_info.get("start", 0) * 1000)
-                    end_ms = int(word_info.get("end", 0) * 1000)
-                    alignments.append(
-                        WordAlignment(word=word_text, start_ms=start_ms, end_ms=end_ms)
-                    )
+        if text:
+            try:
+                alignments = from_deepgram(response)
+            except ConversionError as exc:
+                raise STTError(f"Deepgram returned unusable word timings: {exc}") from exc
 
         logger.info(
             "Deepgram transcribed %d words (model=%s, language=%s)",
