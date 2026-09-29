@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from intent_engine._deployment import is_local_llm, llm_kwargs_with_model
 from intent_engine.engine import IntentEngine
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,10 @@ class HybridEngine(IntentEngine):
     tts_provider:
         TTS provider (``"coqui"``, ``"espeak"``, or ``"elevenlabs"``).
     llm_model:
-        Path to a local GGUF model file or Ollama model name.
+        Path to a local GGUF model file (llama.cpp) or, with
+        ``llm_kwargs={"base_url": ...}``, a model name on a local
+        OpenAI-compatible server such as Ollama or vLLM.  For a cloud LLM
+        provider it is that provider's model name.
     constitutional_rules:
         Optional path to a YAML file with constitutional rules.
     prosody_profile:
@@ -71,10 +75,8 @@ class HybridEngine(IntentEngine):
         llm_kwargs: dict[str, Any] | None = None,
         tts_kwargs: dict[str, Any] | None = None,
     ) -> None:
-        # Merge llm_model into llm_kwargs if provided
-        llm_kw = dict(llm_kwargs or {})
-        if llm_model:
-            llm_kw["model_path"] = llm_model
+        # Hand the model to the parameter the LLM provider really takes
+        llm_kw = llm_kwargs_with_model(llm_provider, llm_model, llm_kwargs)
 
         super().__init__(
             stt_provider=stt_provider,
@@ -89,6 +91,13 @@ class HybridEngine(IntentEngine):
         )
 
         self._llm_model = llm_model
+        self._is_llm_local = is_local_llm(llm_provider, llm_kw)
+        if not self._is_llm_local:
+            logger.warning(
+                "HybridEngine LLM is not local (llm=%s): prompts, including "
+                "transcripts, may leave this machine or network",
+                llm_provider,
+            )
 
         logger.info(
             "HybridEngine initialized (stt=%s [cloud], llm=%s [local], tts=%s, model=%s)",
@@ -105,10 +114,14 @@ class HybridEngine(IntentEngine):
 
     @property
     def is_llm_local(self) -> bool:
-        """Whether the LLM runs locally."""
-        return True
+        """Whether the LLM runs on this machine or a private network.
+
+        ``False`` for a cloud LLM provider, or a ``local`` server whose
+        ``base_url`` is a public address (see ``is_local_url``).
+        """
+        return self._is_llm_local
 
     @property
     def deployment_mode(self) -> str:
-        """Return the deployment mode identifier."""
+        """Return the deployment mode identifier (``"hybrid"``)."""
         return "hybrid"

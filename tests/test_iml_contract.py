@@ -19,6 +19,7 @@ from prosody_protocol import (
     ValidationResult,
 )
 
+from intent_engine.stt.base import TranscriptionResult
 from tests.conftest import (
     assert_valid_iml,
     create_mocked_engine,
@@ -44,7 +45,6 @@ def _setup_pipeline_for_iml(engine, iml_string: str = "<iml><utterance>Hello</ut
     engine._assembler.assemble = MagicMock(return_value=make_iml_document())
     engine._parser.to_iml_string = MagicMock(return_value=iml_string)
     engine._validator.validate = MagicMock(return_value=ValidationResult(valid=True))
-    engine._emotion_classifier.classify = MagicMock(return_value=("neutral", 0.6))
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +185,69 @@ class TestProcessVoiceInputIMLContract:
             assert_valid_iml(result.iml)
         finally:
             Path(path).unlink()
+
+
+class TestRealPipelineIMLContract:
+    """IML the engine really assembles (nothing between STT and the result is
+    mocked) has zero validation errors, with and without prosody."""
+
+    @pytest.fixture()
+    def audio(self):
+        pytest.importorskip("numpy")
+        pytest.importorskip("parselmouth")
+        from tests import synth_audio
+
+        return synth_audio
+
+    @staticmethod
+    def _process(engine, path):
+        return asyncio.run(engine.process_voice_input(str(path), use_cache=False))
+
+    def test_multi_utterance_recording_with_emotion(self, audio, tmp_path) -> None:
+        wav = tmp_path / "turn.wav"
+        aligns = audio.write_recording(wav, [audio.NEUTRAL] * 4 + [audio.ANGRY])
+        result = self._process(audio.engine_for(aligns), wav)
+
+        assert 'emotion="angry"' in result.iml
+        assert 'pause duration="' in result.iml  # utterance boundaries carry pauses
+        assert_valid_iml(result.iml)
+        assert result.iml == _parser.to_iml_string(_parser.parse(result.iml))
+
+    def test_profile_marked_utterance(self, audio, tmp_path) -> None:
+        from prosody_protocol import ProsodyMapping, ProsodyProfile
+
+        wav = tmp_path / "turn.wav"
+        aligns = audio.write_recording(wav, [audio.NEUTRAL] * 4 + [audio.EXCITED])
+        engine = audio.engine_for(aligns)
+        engine.set_profile(
+            ProsodyProfile("1.0.0", "u", None, (ProsodyMapping({"pitch": "high"}, "calm", 0.1),))
+        )
+        result = self._process(engine, wav)
+
+        assert 'x-profile="pitch=high"' in result.iml
+        assert_valid_iml(result.iml)
+
+    def test_text_only_fallback(self, audio, tmp_path) -> None:
+        wav = tmp_path / "short.wav"
+        wav.write_bytes(b"not audio at all")
+        aligns = audio.write_recording(tmp_path / "unused.wav", [audio.NEUTRAL])
+        result = self._process(audio.engine_for(aligns), wav)
+
+        assert result.prosody_features == []
+        assert "Well that is what we said." in result.iml
+        assert_valid_iml(result.iml)
+
+    def test_transcript_without_word_timings(self, audio, tmp_path) -> None:
+        wav = tmp_path / "turn.wav"
+        audio.write_recording(wav, [audio.NEUTRAL])
+        engine = create_mocked_engine()
+        engine._stt.transcribe = AsyncMock(
+            return_value=TranscriptionResult(text="Hello there", alignments=[], language="en")
+        )
+        result = self._process(engine, wav)
+
+        assert "Hello there" in result.iml
+        assert_valid_iml(result.iml)
 
 
 # ---------------------------------------------------------------------------

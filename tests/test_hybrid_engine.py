@@ -129,9 +129,6 @@ class TestHybridEnginePipeline:
         engine._validator.validate = MagicMock(
             return_value=ValidationResult(valid=True)
         )
-        engine._emotion_classifier.classify = MagicMock(
-            return_value=("neutral", 0.5)
-        )
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(b"RIFF fake")

@@ -93,14 +93,24 @@ class TestModelValidation:
             )
 
     def test_skips_named_models(self) -> None:
-        """Named models like 'whisper-large-v3' should not be validated."""
-        # Should NOT raise even though 'whisper-large-v3' is not a real file
+        """Named models like 'large-v3' should not be validated."""
+        # Should NOT raise even though 'large-v3' is not a real file
         engine = _create_local(
-            stt_model="whisper-large-v3",
+            stt_model="large-v3",
             llm_model="llama-3.1-70b",
+            llm_kwargs={"base_url": "http://localhost:11434/v1"},
             validate_models=True,
         )
-        assert engine.stt_model == "whisper-large-v3"
+        assert engine.stt_model == "large-v3"
+
+    def test_skips_model_ids_containing_slashes(self) -> None:
+        """Coqui and Hugging Face style ids contain slashes but are not files."""
+        engine = _create_local(
+            tts_provider="coqui",
+            tts_model="tts_models/en/vctk/vits",
+            validate_models=True,
+        )
+        assert engine.tts_model == "tts_models/en/vctk/vits"
 
     def test_skips_validation_when_disabled(self) -> None:
         """Should not raise when validate_models=False."""
@@ -138,11 +148,14 @@ class TestLocalEngineProperties:
         assert engine.stt_model == "whisper-large-v3"
 
     def test_llm_model(self) -> None:
-        engine = _create_local(llm_model="llama-3.1-70b")
+        engine = _create_local(
+            llm_model="llama-3.1-70b",
+            llm_kwargs={"base_url": "http://localhost:11434/v1"},
+        )
         assert engine.llm_model == "llama-3.1-70b"
 
     def test_tts_model(self) -> None:
-        engine = _create_local(tts_model="coqui-tts-v1")
+        engine = _create_local(tts_provider="coqui", tts_model="coqui-tts-v1")
         assert engine.tts_model == "coqui-tts-v1"
 
     def test_prosody_model(self) -> None:
@@ -166,38 +179,64 @@ class TestLocalEngineProperties:
 
 
 class TestLocalModelKwargsPassthrough:
-    def test_stt_model_in_kwargs(self) -> None:
+    """The model options reach the adapters under the names they take.
+
+    (``tests/test_deployment_wiring.py`` checks the same with the real
+    adapters; here the factories are mocked.)
+    """
+
+    def test_stt_model_is_model_size_for_whisper(self) -> None:
         with patch("intent_engine.engine.create_stt_provider") as stt_f, \
              patch("intent_engine.engine.create_llm_provider") as llm_f, \
              patch("intent_engine.engine.create_tts_provider") as tts_f:
             stt_f.return_value = MagicMock()
             llm_f.return_value = MagicMock()
             tts_f.return_value = MagicMock()
-            LocalEngine(stt_model="whisper-large-v3", validate_models=False)
+            LocalEngine(stt_model="large-v3", validate_models=False)
             call_kwargs = stt_f.call_args[1]
-            assert call_kwargs.get("model") == "whisper-large-v3"
+            assert call_kwargs.get("model_size") == "large-v3"
+            assert "model" not in call_kwargs
 
-    def test_llm_model_in_kwargs(self) -> None:
+    def test_gguf_llm_model_is_model_path(self) -> None:
         with patch("intent_engine.engine.create_stt_provider") as stt_f, \
              patch("intent_engine.engine.create_llm_provider") as llm_f, \
              patch("intent_engine.engine.create_tts_provider") as tts_f:
             stt_f.return_value = MagicMock()
             llm_f.return_value = MagicMock()
             tts_f.return_value = MagicMock()
-            LocalEngine(llm_model="llama-3.1-70b", validate_models=False)
+            LocalEngine(llm_model="models/llama-3.1-70b.gguf", validate_models=False)
             call_kwargs = llm_f.call_args[1]
-            assert call_kwargs.get("model_path") == "llama-3.1-70b"
+            assert call_kwargs.get("model_path") == "models/llama-3.1-70b.gguf"
 
-    def test_tts_model_in_kwargs(self) -> None:
+    def test_llm_model_name_is_the_server_model(self) -> None:
         with patch("intent_engine.engine.create_stt_provider") as stt_f, \
              patch("intent_engine.engine.create_llm_provider") as llm_f, \
              patch("intent_engine.engine.create_tts_provider") as tts_f:
             stt_f.return_value = MagicMock()
             llm_f.return_value = MagicMock()
             tts_f.return_value = MagicMock()
-            LocalEngine(tts_model="coqui-tts-v1", validate_models=False)
+            LocalEngine(
+                llm_model="llama3",
+                llm_kwargs={"base_url": "http://localhost:11434/v1"},
+                validate_models=False,
+            )
+            call_kwargs = llm_f.call_args[1]
+            assert call_kwargs.get("model") == "llama3"
+            assert "model_path" not in call_kwargs
+
+    def test_tts_model_is_model_name_for_coqui(self) -> None:
+        with patch("intent_engine.engine.create_stt_provider") as stt_f, \
+             patch("intent_engine.engine.create_llm_provider") as llm_f, \
+             patch("intent_engine.engine.create_tts_provider") as tts_f:
+            stt_f.return_value = MagicMock()
+            llm_f.return_value = MagicMock()
+            tts_f.return_value = MagicMock()
+            LocalEngine(
+                tts_provider="coqui", tts_model="coqui-tts-v1", validate_models=False
+            )
             call_kwargs = tts_f.call_args[1]
-            assert call_kwargs.get("model") == "coqui-tts-v1"
+            assert call_kwargs.get("model_name") == "coqui-tts-v1"
+            assert "model" not in call_kwargs
 
 
 class TestLocalEnginePipeline:
@@ -218,9 +257,6 @@ class TestLocalEnginePipeline:
         engine._parser.to_iml_string = MagicMock(return_value="<iml/>")
         engine._validator.validate = MagicMock(
             return_value=ValidationResult(valid=True)
-        )
-        engine._emotion_classifier.classify = MagicMock(
-            return_value=("neutral", 0.5)
         )
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:

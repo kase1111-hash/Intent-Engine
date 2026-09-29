@@ -26,8 +26,10 @@ from intent_engine.errors import LLMError, STTError, TTSError
 from intent_engine.models.audio import Audio
 from intent_engine.models.response import Response
 from intent_engine.models.result import Result
+from intent_engine.stt.base import TranscriptionResult
 from tests.conftest import (
     create_mocked_engine,
+    make_flat_speech,
     make_iml_document,
     make_interpretation_result,
     make_span_features,
@@ -46,16 +48,14 @@ def _setup_full_pipeline(engine, text="Hello", emotion="neutral", confidence=0.6
     )
     engine._analyzer.detect_pauses = MagicMock(return_value=[])
 
-    iml_doc = make_iml_document()
+    # Result reports the emotion the assembler put in the document
+    iml_doc = make_iml_document(emotion=emotion, confidence=confidence)
     engine._assembler.assemble = MagicMock(return_value=iml_doc)
     engine._parser.to_iml_string = MagicMock(
         return_value="<iml><utterance>Hello</utterance></iml>"
     )
     engine._validator.validate = MagicMock(
         return_value=ValidationResult(valid=True)
-    )
-    engine._emotion_classifier.classify = MagicMock(
-        return_value=(emotion, confidence)
     )
 
     engine._llm.interpret = AsyncMock(
@@ -76,7 +76,7 @@ class TestFullPipeline:
 
     def test_audio_to_result(self) -> None:
         engine = create_mocked_engine()
-        _setup_full_pipeline(engine, text="I need help", emotion="uncertain", confidence=0.7)
+        _setup_full_pipeline(engine, text="I need help", emotion="fearful", confidence=0.7)
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(b"RIFF fake audio")
@@ -89,9 +89,9 @@ class TestFullPipeline:
 
             assert isinstance(result, Result)
             assert result.text == "I need help"
-            assert result.emotion == "uncertain"
+            assert result.emotion == "fearful"
             assert result.confidence == 0.7
-            assert result.suggested_tone == "uncertain"
+            assert result.suggested_tone == "fearful"
         finally:
             Path(path).unlink()
 
@@ -127,7 +127,7 @@ class TestFullPipeline:
         """Complete round trip: audio -> process -> generate -> synthesize."""
         engine = create_mocked_engine()
         _setup_full_pipeline(
-            engine, text="Cancel my subscription", emotion="frustrated", confidence=0.85
+            engine, text="Cancel my subscription", emotion="angry", confidence=0.85
         )
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -139,7 +139,7 @@ class TestFullPipeline:
             result = asyncio.run(
                 engine.process_voice_input(path)
             )
-            assert result.emotion == "frustrated"
+            assert result.emotion == "angry"
 
             # Step 2: Generate response using IML
             response = asyncio.run(
@@ -228,30 +228,49 @@ class TestFullPipelineWithProfile:
     """End-to-end with accessibility profile active."""
 
     def test_profile_adjusts_emotion(self) -> None:
+        # Real assembler and validator; the analyzer returns monotone features
         engine = create_mocked_engine()
-        _setup_full_pipeline(engine, text="I'm fine", emotion="neutral", confidence=0.5)
+        alignments, features = make_flat_speech()
+        engine._stt.transcribe = AsyncMock(
+            return_value=TranscriptionResult(
+                text="I am fine thank you today.", alignments=alignments, language="en"
+            )
+        )
+        engine._analyzer.analyze = MagicMock(return_value=features)
+        engine._analyzer.detect_pauses = MagicMock(return_value=[])
+        engine._llm.interpret = AsyncMock(return_value=make_interpretation_result())
 
-        profile = ProsodyProfile(
-            profile_version="1.0",
-            user_id="asd-user-001",
-            description="Flat affect -- high pitch means joyful",
-            mappings=[
-                ProsodyMapping(
-                    pattern={"f0_mean": "normal"},
-                    interpretation_emotion="calm",
-                    confidence_boost=0.2,
+        engine.set_profile(
+            ProsodyProfile(
+                profile_version="1.0.0",
+                user_id="asd-user-001",
+                description="Flat affect -- a monotone voice means calm",
+                mappings=(
+                    ProsodyMapping(
+                        pattern={"pitch_contour": "flat"},
+                        interpretation_emotion="calm",
+                        confidence_boost=0.6,
+                    ),
                 ),
-            ],
+            )
         )
-        engine.set_profile(profile)
 
-        features = [make_span_features(f0_mean=170.0)]
-        labels = engine._derive_feature_labels(features)
-        emotion, confidence = engine._profile_applier.apply(
-            profile, labels, "neutral", 0.5
-        )
-        assert emotion == "calm"
-        assert confidence > 0.5
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            f.write(b"RIFF fake audio")
+            path = f.name
+
+        try:
+            result = asyncio.run(engine.process_voice_input(path))
+            assert (result.emotion, result.confidence) == ("calm", 0.6)
+            assert result.suggested_tone == "calm"
+
+            # the LLM is handed the IML that records the profile's reading
+            asyncio.run(engine.generate_response(result.iml, tone=result.suggested_tone))
+            iml_sent = engine._llm.interpret.call_args.args[0]
+            assert 'emotion="calm"' in iml_sent
+            assert 'x-profile="pitch_contour=flat"' in iml_sent
+        finally:
+            Path(path).unlink()
 
 
 class TestFullPipelineErrorRecovery:

@@ -16,11 +16,9 @@ from unittest.mock import AsyncMock, MagicMock
 from prosody_protocol import (
     ProsodyMapping,
     ProsodyProfile,
-    SpanFeatures,
     ValidationResult,
 )
 
-from intent_engine.engine import IntentEngine
 from tests.conftest import (
     create_mocked_engine,
     make_iml_document,
@@ -47,7 +45,6 @@ def _setup_fast_pipeline(engine):
         return_value="<iml><utterance>Benchmark text</utterance></iml>"
     )
     engine._validator.validate = MagicMock(return_value=ValidationResult(valid=True))
-    engine._emotion_classifier.classify = MagicMock(return_value=("neutral", 0.6))
     engine._llm.interpret = AsyncMock(
         return_value=make_interpretation_result()
     )
@@ -199,80 +196,43 @@ class TestEvaluateIntentPerformance:
 
 
 # ---------------------------------------------------------------------------
-# Feature label derivation performance
-# ---------------------------------------------------------------------------
-
-
-class TestDeriveFeatureLabelsPerformance:
-    """Feature label derivation should be O(n) in span count."""
-
-    def test_single_span_fast(self) -> None:
-        features = [make_span_features()]
-        avg_time = _measure_sync(
-            lambda: IntentEngine._derive_feature_labels(features),
-            iterations=1000,
-        )
-        assert avg_time < 0.001, f"_derive_feature_labels (1 span) avg: {avg_time:.6f}s"
-
-    def test_many_spans_still_fast(self) -> None:
-        features = [
-            SpanFeatures(
-                start_ms=i * 100,
-                end_ms=(i + 1) * 100,
-                text=f"word_{i}",
-                f0_mean=150.0 + (i % 50),
-                intensity_mean=60.0 + (i % 20),
-                speech_rate=4.0 + (i % 3),
-            )
-            for i in range(100)
-        ]
-        avg_time = _measure_sync(
-            lambda: IntentEngine._derive_feature_labels(features),
-            iterations=100,
-        )
-        assert avg_time < 0.01, f"_derive_feature_labels (100 spans) avg: {avg_time:.6f}s"
-
-
-# ---------------------------------------------------------------------------
 # Profile application performance
 # ---------------------------------------------------------------------------
 
 
 class TestProfilePerformance:
-    """Profile application overhead should be minimal."""
+    """Switching the active profile should be cheap."""
 
-    def test_profile_apply_fast(self) -> None:
+    def test_set_profile_fast(self) -> None:
         engine = create_mocked_engine()
         profile = ProsodyProfile(
-            profile_version="1.0",
+            profile_version="1.0.0",
             user_id="perf-test",
             description="Performance test profile",
-            mappings=[
+            mappings=(
                 ProsodyMapping(
-                    pattern={"f0_mean": "high"},
+                    pattern={"pitch": "high"},
                     interpretation_emotion="joyful",
                     confidence_boost=0.2,
                 ),
                 ProsodyMapping(
-                    pattern={"speech_rate": "slow"},
+                    pattern={"rate": "slow"},
                     interpretation_emotion="calm",
                     confidence_boost=0.1,
                 ),
                 ProsodyMapping(
-                    pattern={"intensity_mean": "loud"},
+                    pattern={"volume": "loud"},
                     interpretation_emotion="angry",
                     confidence_boost=0.15,
                 ),
-            ],
+            ),
         )
-
-        labels = {"f0_mean": "high", "intensity_mean": "normal", "speech_rate": "normal"}
 
         avg_time = _measure_sync(
-            lambda: engine._profile_applier.apply(profile, labels, "neutral", 0.5),
-            iterations=1000,
+            lambda: engine.set_profile(profile),
+            iterations=200,
         )
-        assert avg_time < 0.001, f"profile apply avg: {avg_time:.6f}s"
+        assert avg_time < 0.005, f"set_profile avg: {avg_time:.6f}s"
 
 
 # ---------------------------------------------------------------------------
