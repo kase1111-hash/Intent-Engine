@@ -102,10 +102,14 @@ class _FakeDeepgram:
         self.error: Exception | None = None
         self.client_kwargs: dict[str, Any] = {}
         self.call_kwargs: dict[str, Any] = {}
+        self.http_clients: list[Any] = []
+        self.open_during_request: list[bool] = []
         fake = self
 
         async def transcribe_file(**kwargs: Any) -> Any:
             fake.call_kwargs = kwargs
+            http = fake.http_clients[-1] if fake.http_clients else None
+            fake.open_during_request.append(http is not None and not http.is_closed)
             if fake.error is not None:
                 raise fake.error
             return fake.response
@@ -113,6 +117,7 @@ class _FakeDeepgram:
         class AsyncDeepgramClient:
             def __init__(self, **kwargs: Any) -> None:
                 fake.client_kwargs = kwargs
+                fake.http_clients.append(kwargs.get("httpx_client"))
                 media = SimpleNamespace(transcribe_file=transcribe_file)
                 self.listen = SimpleNamespace(v1=SimpleNamespace(media=media))
 
@@ -123,6 +128,8 @@ class _FakeDeepgram:
 
 @pytest.fixture()
 def fake_deepgram(monkeypatch: pytest.MonkeyPatch) -> _FakeDeepgram:
+    # The adapter owns an httpx client for every call (deepgram-sdk always installs httpx).
+    pytest.importorskip("httpx")
     return _FakeDeepgram(monkeypatch)
 
 
@@ -170,7 +177,8 @@ class TestDeepgramSTTTranscribe:
     ) -> None:
         stt = DeepgramSTT(api_key="secret", model="nova-3", language="fr")
         asyncio.run(stt.transcribe(audio_file))
-        assert fake_deepgram.client_kwargs == {"api_key": "secret"}
+        assert set(fake_deepgram.client_kwargs) == {"api_key", "httpx_client"}
+        assert fake_deepgram.client_kwargs["api_key"] == "secret"
         assert fake_deepgram.call_kwargs == {
             "request": b"RIFF fake audio bytes",
             "model": "nova-3",
@@ -252,6 +260,72 @@ class TestDeepgramSTTTranscribe:
         fake_deepgram.response = _response(words=[_word("late", 2.0, 1.0)])
         with pytest.raises(STTError, match="late"):
             asyncio.run(DeepgramSTT(api_key="key").transcribe(audio_file))
+
+
+class TestDeepgramClientLifetime:
+    """The SDK's client has no ``close()``; the adapter owns and closes the httpx client."""
+
+    def test_the_http_client_is_closed_after_a_call(
+        self, fake_deepgram: _FakeDeepgram, audio_file: str
+    ) -> None:
+        import httpx
+
+        asyncio.run(DeepgramSTT(api_key="key").transcribe(audio_file))
+
+        (http,) = fake_deepgram.http_clients
+        assert isinstance(http, httpx.AsyncClient)
+        assert http.is_closed
+
+    def test_the_client_is_open_while_the_request_runs(
+        self, fake_deepgram: _FakeDeepgram, audio_file: str
+    ) -> None:
+        asyncio.run(DeepgramSTT(api_key="key").transcribe(audio_file))
+
+        assert fake_deepgram.open_during_request == [True]
+
+    def test_the_http_client_is_closed_when_the_request_fails(
+        self, fake_deepgram: _FakeDeepgram, audio_file: str
+    ) -> None:
+        fake_deepgram.error = RuntimeError("status_code: 500")
+
+        with pytest.raises(STTError):
+            asyncio.run(DeepgramSTT(api_key="key").transcribe(audio_file))
+
+        (http,) = fake_deepgram.http_clients
+        assert http.is_closed
+
+    def test_the_http_client_is_closed_when_the_response_is_unusable(
+        self, fake_deepgram: _FakeDeepgram, audio_file: str
+    ) -> None:
+        fake_deepgram.response = SimpleNamespace(request_id="abc-123")
+
+        with pytest.raises(STTError, match="no transcription results"):
+            asyncio.run(DeepgramSTT(api_key="key").transcribe(audio_file))
+
+        (http,) = fake_deepgram.http_clients
+        assert http.is_closed
+
+    def test_every_call_gets_its_own_client(
+        self, fake_deepgram: _FakeDeepgram, audio_file: str
+    ) -> None:
+        # A client keeps its connections bound to the loop that first used it, and the
+        # adapter can be awaited from a different loop each time.
+        stt = DeepgramSTT(api_key="key")
+        for _ in range(3):
+            asyncio.run(stt.transcribe(audio_file))
+
+        assert len({id(http) for http in fake_deepgram.http_clients}) == 3
+        assert all(http.is_closed for http in fake_deepgram.http_clients)
+
+    def test_the_sdk_defaults_for_timeout_and_redirects_are_kept(
+        self, fake_deepgram: _FakeDeepgram, audio_file: str
+    ) -> None:
+        # The SDK applies these only to a client it builds itself.
+        asyncio.run(DeepgramSTT(api_key="key").transcribe(audio_file))
+
+        (http,) = fake_deepgram.http_clients
+        assert http.timeout.read == 60.0
+        assert http.follow_redirects is True
 
 
 class TestDeepgramResponseParsing:

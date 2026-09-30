@@ -70,6 +70,12 @@ class CoquiTTS(TTSProvider):
     Both packages are imported as ``TTS``.  TTS 0.22.0, the last release of
     the original package, does not install on Python 3.12 or later; the
     maintained fork ``coqui-tts`` does.
+
+    Loading and synthesis run in a worker thread, one call at a time per
+    instance.  A thread cannot be interrupted: cancelling a call stops the
+    wait, but the synthesis finishes, its audio is discarded and calls
+    queued behind it still run in turn.  Bound the calls in flight if you
+    apply timeouts.
     """
 
     def __init__(
@@ -162,11 +168,11 @@ class CoquiTTS(TTSProvider):
             self._synthesize_blocking, strip_ssml(text), voice_params.rate
         )
 
+        # The emotion is not logged above DEBUG level: emotional data is sensitive.
         logger.info(
-            "Coqui TTS synthesized %d bytes (model=%s, emotion=%s, duration=%.2fs)",
+            "Coqui TTS synthesized %d bytes (model=%s, duration=%.2fs)",
             len(result.audio_data),
             self._model_name,
-            emotion,
             result.duration or 0.0,
         )
 

@@ -99,9 +99,11 @@ class ClaudeLLM(LLMProvider):
         if self._temperature is not None:
             extra["extra_body"] = {"temperature": self._temperature}
 
-        # The client is opened per call: the sync wrappers run every call in a
-        # fresh event loop (asyncio.run), and a client keeps its connections
-        # bound to the loop that first used it.
+        # The client is opened per call, not cached: an async client keeps its
+        # connections bound to the event loop that first used it, and this adapter
+        # can be awaited from a different loop each time (a caller that runs
+        # asyncio.run per call, or an engine whose sync-wrapper loop was
+        # recreated after close() or a fork).
         async with anthropic.AsyncAnthropic(api_key=self._api_key) as client:
             response = await client.messages.create(
                 model=self._model,
@@ -121,17 +123,21 @@ class ClaudeLLM(LLMProvider):
             for block in response.content
             if getattr(block, "type", None) == "text"
         )
+        cut_off = (
+            f"Claude's reply was cut off at max_tokens={self._max_tokens} "
+            "(thinking counts towards it); raise max_tokens"
+        )
         if not raw_text.strip():
+            # Thinking that uses up the whole budget leaves no text block at all.
+            if stop_reason == "max_tokens":
+                raise LLMError(cut_off)
             raise LLMError("Claude returned no text content")
 
         try:
             result = parse_interpretation(raw_text, "Claude")
         except LLMError as exc:
             if stop_reason == "max_tokens":
-                raise LLMError(
-                    f"Claude's reply was cut off at max_tokens={self._max_tokens} "
-                    "(thinking counts towards it); raise max_tokens"
-                ) from exc
+                raise LLMError(cut_off) from exc
             raise
 
         logger.info(

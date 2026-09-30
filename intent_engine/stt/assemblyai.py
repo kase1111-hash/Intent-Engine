@@ -37,6 +37,13 @@ class AssemblyAISTT(STTProvider):
         environment variable if not provided.
     language_code:
         Language code (e.g., ``"en"``).
+
+    Notes
+    -----
+    The SDK's synchronous client uploads the file and polls until the
+    transcript is done, in a worker thread.  A thread cannot be interrupted:
+    cancelling a call stops the wait, but the SDK call keeps running until
+    AssemblyAI finishes the job.
     """
 
     def __init__(

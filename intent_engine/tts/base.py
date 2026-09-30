@@ -8,7 +8,6 @@ Prosody Protocol's core emotion vocabulary.
 
 from __future__ import annotations
 
-import html
 import logging
 import re
 from abc import ABC, abstractmethod
@@ -103,7 +102,9 @@ def normalize_emotion(emotion: object) -> str:
     whitespace.  ``None``, an empty string, non-string values and labels
     outside the core vocabulary all resolve to ``"neutral"``; anything
     other than ``None`` or an empty string is logged at warning level so
-    a mislabelled emotion does not silently become a neutral voice.
+    a mislabelled emotion does not silently become a neutral voice.  The
+    warning does not name the label, because emotional data is sensitive;
+    the label (truncated) is logged at DEBUG.
 
     Parameters
     ----------
@@ -127,7 +128,8 @@ def normalize_emotion(emotion: object) -> str:
     if key in EMOTION_VOICE_MAP:
         return key
     if key:
-        logger.warning("Unknown emotion %.40r; using neutral", emotion)
+        logger.warning("Unknown emotion label; using neutral")
+        logger.debug("Unrecognised emotion label: %.40r", emotion)
     return "neutral"
 
 
@@ -155,7 +157,23 @@ _SSML_DOCUMENT_RE = re.compile(
     r"\A\s*(?:<\?xml[^<>]*\?>\s*)?<speak(?:\s[^<>]*)?>.*</speak>\s*\Z", re.DOTALL
 )
 _SSML_BOUNDARY_TAG_RE = re.compile(r"</?(?:speak|s|p|break|voice)(?:\s[^<>]*)?/?>")
-_SSML_TAG_RE = re.compile(r"<[^<>]*>")
+# A tag, comment or processing instruction starts with "<" and a name character, "/", "!" or
+# "?", so a stray "<" before a space or a digit ("3 < 5") is left in the text.
+_SSML_TAG_RE = re.compile(r"<[/!?A-Za-z_][^<>]*>")
+# The five predefined XML entities and character references, each with its semicolon.
+# The digit counts are the most a character up to U+10FFFF needs.
+_XML_ENTITY_RE = re.compile(r"&(#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|lt|gt|amp|quot|apos);")
+_XML_ENTITIES = {"lt": "<", "gt": ">", "amp": "&", "quot": '"', "apos": "'"}
+
+
+def _decode_xml_entity(match: re.Match[str]) -> str:
+    name = match[1]
+    if not name.startswith("#"):
+        return _XML_ENTITIES[name]
+    code = int(name[2:], 16) if name[1] in "xX" else int(name[1:])
+    if 0 < code <= 0x10FFFF and not 0xD800 <= code <= 0xDFFF:
+        return chr(code)
+    return match[0]
 
 
 def strip_ssml(text: str) -> str:
@@ -166,6 +184,18 @@ def strip_ssml(text: str) -> str:
     is a whole ``<speak>...</speak>`` document is touched; everything
     else, including plain text that merely contains ``<`` or ``>``, is
     returned unchanged.
+
+    This is a linear-time pattern reducer, not an XML parser, tuned for the
+    documents ``prosody_protocol.IMLToSSML`` writes.  Tags are removed and
+    the five predefined XML entities and numeric character references
+    (with their semicolons) are decoded; a ``<`` that is not followed by a
+    name character, ``/``, ``!`` or ``?`` is kept as text.  Its limits: a
+    ``<!-- -->`` comment containing ``>`` and a ``<![CDATA[ ]]>`` section
+    are not understood (their text is not decoded, and part of it may
+    remain), the ``alias`` of ``<sub>`` is not spoken, and a document
+    that starts with a byte-order mark or a ``<!DOCTYPE>`` is not
+    recognised as SSML.  A ``<`` followed by a letter that is not a tag
+    ("a <b and c> d") is still taken for one.
 
     Parameters
     ----------
@@ -181,7 +211,7 @@ def strip_ssml(text: str) -> str:
     if not _SSML_DOCUMENT_RE.match(text):
         return text
     spaced = _SSML_BOUNDARY_TAG_RE.sub(" ", text)
-    return " ".join(html.unescape(_SSML_TAG_RE.sub("", spaced)).split())
+    return " ".join(_XML_ENTITY_RE.sub(_decode_xml_entity, _SSML_TAG_RE.sub("", spaced)).split())
 
 
 @dataclass(frozen=True)
@@ -221,6 +251,17 @@ class TTSProvider(ABC):
         ``text``.  ``False`` for every built-in adapter: they treat the
         text as plain text, so callers should send plain text unless a
         provider sets this to ``True``.
+
+    Notes
+    -----
+    An adapter whose engine blocks (a local model, a synchronous SDK) runs it
+    in a worker thread, and a thread cannot be interrupted.  Cancelling
+    ``synthesize`` (or timing it out) stops the wait, but a synthesis already
+    running finishes and its audio is discarded.  An adapter that makes calls
+    take turns on one engine also lets calls queued behind it run in turn, so a
+    caller that applies timeouts should bound how many calls it has in flight
+    (for example with an ``asyncio.Semaphore``).  A cancelled call never
+    changes the result of the next one.
     """
 
     supports_ssml: bool = False

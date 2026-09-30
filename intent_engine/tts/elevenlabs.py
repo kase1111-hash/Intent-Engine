@@ -159,11 +159,11 @@ class ElevenLabsTTS(TTSProvider):
 
         audio_bytes = await asyncio.to_thread(convert)
 
+        # The emotion is not logged above DEBUG level: emotional data is sensitive.
         logger.info(
-            "ElevenLabs synthesized %d bytes (voice=%s, emotion=%s, format=%s)",
+            "ElevenLabs synthesized %d bytes (voice=%s, format=%s)",
             len(audio_bytes),
             self._voice_id,
-            emotion,
             self._audio_format,
         )
 

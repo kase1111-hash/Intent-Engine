@@ -84,3 +84,43 @@ async def test_concurrent_calls_all_produce_audio() -> None:
         *(ESpeakTTS().synthesize(f"Sentence number {i}.", emotion="calm") for i in range(4))
     )
     assert all(_wav_stats(r.audio_data)[0] > 0 for r in results)
+
+
+def _median_f0(audio: bytes) -> float:
+    """Median fundamental frequency (Hz) of the voiced frames of a 16-bit mono WAV."""
+    np = pytest.importorskip("numpy")
+    with wave.open(io.BytesIO(audio), "rb") as wf:
+        rate = wf.getframerate()
+        samples = np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2").astype(float)
+    frame, hop = int(0.04 * rate), int(0.02 * rate)
+    lags = np.arange(int(rate / 400), int(rate / 60))
+    estimates = []
+    for start in range(0, len(samples) - frame, hop):
+        window = samples[start : start + frame]
+        window = window - window.mean()
+        if np.sqrt(np.mean(window**2)) < 500:  # unvoiced or silent
+            continue
+        corr = np.correlate(window, window, "full")[frame - 1 :]
+        if corr[0] <= 0:
+            continue
+        best = lags[np.argmax(corr[lags])]
+        if corr[best] > 0.5 * corr[0]:  # clearly periodic
+            estimates.append(rate / best)
+    assert estimates, "no voiced frames found"
+    return float(np.median(estimates))
+
+
+async def test_default_voice_instance_is_unaffected_by_another_instance() -> None:
+    text = "Hello there, this is a test sentence."
+    female, default = ESpeakTTS(voice="en+f3"), ESpeakTTS()
+    alone = _median_f0((await default.synthesize(text)).audio_data)
+    female_alone = _median_f0((await female.synthesize(text)).audio_data)
+    assert female_alone > alone * 1.3, "the two voices should be easy to tell apart"
+
+    results = await asyncio.gather(
+        *(tts.synthesize(text) for _ in range(10) for tts in (female, default))
+    )
+
+    pitches = [_median_f0(r.audio_data) for r in results]
+    assert all(abs(f0 - female_alone) < abs(f0 - alone) for f0 in pitches[0::2])
+    assert all(abs(f0 - alone) < abs(f0 - female_alone) for f0 in pitches[1::2])

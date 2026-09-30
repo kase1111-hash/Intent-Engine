@@ -176,3 +176,36 @@ class TestDeepgramSTTAgainstSDK:
         api.handler = lambda *_: json_response(silent)
         result = asyncio.run(DeepgramSTT(api_key="test-key").transcribe(audio_path))
         assert (result.text, result.alignments) == ("", [])
+
+
+class TestClientLifetime:
+    """The SDK client has no ``close()``, so its httpx client must be closed by the adapter.
+
+    An unclosed client keeps its keep-alive connections until the garbage collector
+    finds it.  The fake server closes every connection (HTTP/1.0), so open sockets
+    cannot show it; what is checked is that every httpx client created is closed.
+    """
+
+    def test_every_http_client_is_closed_after_success_and_failure(
+        self, api: FakeServer, audio_path: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        httpx = pytest.importorskip("httpx")
+        clients: list[object] = []
+        real_client = httpx.AsyncClient
+
+        class RecordingClient(real_client):  # type: ignore[misc]
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                super().__init__(*args, **kwargs)
+                clients.append(self)
+
+        monkeypatch.setattr(httpx, "AsyncClient", RecordingClient)
+        stt = DeepgramSTT(api_key="test-key")
+
+        for _ in range(3):
+            asyncio.run(stt.transcribe(audio_path))
+        api.handler = lambda *_: json_response({"err_msg": "Invalid credentials."}, status=401)
+        with pytest.raises(STTError):
+            asyncio.run(stt.transcribe(audio_path))
+
+        assert len(clients) >= 4
+        assert all(client.is_closed for client in clients)  # type: ignore[attr-defined]

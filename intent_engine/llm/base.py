@@ -40,6 +40,8 @@ CORE_EMOTIONS: tuple[str, ...] = (
 
 _REPLY_FIELDS = ("intent", "response_text", "suggested_emotion")
 _FENCE_OPENING = re.compile(r"^```[\w-]*")
+# Every non-empty JSON object starts this way; a "{" followed by anything else is prose.
+_OBJECT_START = re.compile(r'\{\s*"')
 _SNIPPET_LENGTH = 200
 
 
@@ -120,39 +122,55 @@ def normalize_emotion(label: str) -> str:
     return "neutral"
 
 
-def _snippet(raw: str) -> str:
-    return raw[:_SNIPPET_LENGTH]
+def _reject(message: str, text: str, kind: str = "reply") -> LLMError:
+    """Build the error for an unusable model reply without quoting the reply.
+
+    A reply can echo what the user said, the intent label and the emotion, all
+    sensitive, and an exception message ends up in application logs and
+    tracebacks.  The message therefore gives only the problem and the length of
+    ``text``; the start of it is logged at DEBUG, as :func:`normalize_emotion`
+    does with a label.
+    """
+    logger.debug("%s (%s: %.*r)", message, kind, _SNIPPET_LENGTH, text)
+    return LLMError(f"{message} ({kind} length {len(text)})")
 
 
 def _reply_object(raw: str, source: str) -> dict[str, Any]:
     """Find the JSON object in a model reply.
 
-    Models sometimes wrap the object in a markdown fence or surround it
-    with a sentence of prose, so text that is not a bare object is
-    searched for the first ``{`` that starts a valid JSON object.
+    Models sometimes wrap the object in a markdown fence or surround it with
+    a sentence of prose, so text that is not a bare object is searched for
+    its first ``{"``.  The object found there must decode, and it must be the
+    only one: a reply that another object could be read from (a second
+    object, or one inside a truncated first) is refused rather than guessed
+    at, because the intent in it feeds the constitutional filter.  Every step
+    is linear in the length of the reply.
     """
     text = raw.strip()
     if text.startswith("```"):
         text = _FENCE_OPENING.sub("", text).removesuffix("```").strip()
 
+    # ValueError covers a JSONDecodeError and an integer with too many digits;
     # RecursionError: json gives up on very deeply nested (degenerate) replies.
     try:
         whole = json.loads(text)
-    except (json.JSONDecodeError, RecursionError):
-        decoder = json.JSONDecoder()
-        start = text.find("{")
-        while start != -1:
-            try:
-                # Starting at "{", a successful decode is always an object.
-                found: dict[str, Any] = decoder.raw_decode(text, start)[0]
-            except (json.JSONDecodeError, RecursionError):
-                start = text.find("{", start + 1)
-            else:
-                return found
-        raise LLMError(f"{source} returned non-JSON response: {_snippet(raw)}") from None
+    except (ValueError, RecursionError):
+        start = _OBJECT_START.search(text)
+        if start is None:
+            raise _reject(f"{source} returned non-JSON response", raw) from None
+        try:
+            # Starting at "{", a successful decode is always an object.
+            found: tuple[dict[str, Any], int] = json.JSONDecoder().raw_decode(
+                text, start.start()
+            )
+        except (ValueError, RecursionError):
+            raise _reject(f"{source} returned non-JSON response", raw) from None
+        if _OBJECT_START.search(text, found[1]) is not None:
+            raise _reject(f"{source} returned more than one JSON object", raw) from None
+        return found[0]
 
     if not isinstance(whole, dict):
-        raise LLMError(f"{source} returned JSON that is not an object: {_snippet(raw)}")
+        raise _reject(f"{source} returned JSON that is not an object", raw)
     return whole
 
 
@@ -179,7 +197,10 @@ def parse_interpretation(raw: str, source: str) -> InterpretationResult:
     ------
     intent_engine.errors.LLMError
         If the reply is not a JSON object, or a required field is
-        missing, is not a string, or is blank.
+        missing, is not a string, or is blank.  The message names the
+        problem and the reply's length but does not quote it, because a
+        reply can echo the user's words; the start of the reply is logged
+        at DEBUG.
     """
     obj = _reply_object(raw, source)
 
@@ -187,7 +208,7 @@ def parse_interpretation(raw: str, source: str) -> InterpretationResult:
     for name in _REPLY_FIELDS:
         value = obj.get(name)
         if not isinstance(value, str) or not value.strip():
-            raise LLMError(f"{source} response has no usable {name!r} string: {_snippet(raw)}")
+            raise _reject(f"{source} response has no usable {name!r} string", raw)
         fields[name] = value.strip()
 
     return InterpretationResult(
@@ -214,7 +235,8 @@ def chat_completion_text(response: Any, source: str) -> str:
     ------
     intent_engine.errors.LLMError
         If the response has no choices or the message has no text (for
-        example because the model refused; the refusal is quoted).
+        example because the model refused; the message gives the length of
+        the refusal, not its text, which is logged at DEBUG).
     """
     choices = _field(response, "choices")
     if not choices:
@@ -225,5 +247,5 @@ def chat_completion_text(response: Any, source: str) -> str:
         return content
     refusal = _field(message, "refusal")
     if isinstance(refusal, str) and refusal:
-        raise LLMError(f"{source} refused to answer: {_snippet(refusal)}")
+        raise _reject(f"{source} refused to answer", refusal, "refusal")
     raise LLMError(f"{source} returned no text")

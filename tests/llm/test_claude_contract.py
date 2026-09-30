@@ -109,6 +109,29 @@ class TestResponseShapes:
         with pytest.raises(LLMError, match="refus"):
             _interpret(ClaudeLLM(api_key="k"))
 
+    @pytest.mark.parametrize(
+        "content",
+        [[], [{"type": "thinking", "thinking": "", "signature": "sig"}]],
+        ids=["empty", "thinking only"],
+    )
+    def test_budget_used_up_before_any_text_says_max_tokens_was_hit(
+        self, fake_api: FakeAPIServer, content: list[dict[str, str]]
+    ) -> None:
+        fake_api.anthropic_content = content
+        fake_api.anthropic_stop_reason = "max_tokens"
+
+        with pytest.raises(LLMError, match="max_tokens=64"):
+            _interpret(ClaudeLLM(api_key="k", max_tokens=64))
+
+    def test_no_text_without_the_limit_is_still_just_no_text(
+        self, fake_api: FakeAPIServer
+    ) -> None:
+        fake_api.anthropic_content = [{"type": "thinking", "thinking": "", "signature": "sig"}]
+        fake_api.anthropic_stop_reason = "end_turn"
+
+        with pytest.raises(LLMError, match="no text"):
+            _interpret(ClaudeLLM(api_key="k", max_tokens=64))
+
     def test_truncated_reply_says_max_tokens_was_hit(self, fake_api: FakeAPIServer) -> None:
         fake_api.anthropic_content = [{"type": "text", "text": '{"intent": "request_he'}]
         fake_api.anthropic_stop_reason = "max_tokens"

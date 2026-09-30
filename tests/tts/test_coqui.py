@@ -353,3 +353,35 @@ class TestFloatSamplesToWav:
         buf = BytesIO(wav_bytes)
         with wave.open(buf, "rb") as wf:
             assert wf.getnframes() == 2
+
+
+class TestCoquiCancellation:
+    async def test_a_cancelled_call_does_not_disturb_the_next_one(self) -> None:
+        """Cancelling stops the wait, not the synthesis; the next call still gets its own audio."""
+        started = threading.Event()
+        release = threading.Event()
+
+        class Blocking(StubModel):
+            def tts(self, **kwargs: Any) -> list[float]:
+                if kwargs["text"] == "first":
+                    started.set()
+                    assert release.wait(5), "the synthesis was never released"
+                    return [0.1] * 10
+                return [0.2] * 30
+
+        tts = CoquiTTS()
+        tts._tts = Blocking()
+
+        first = asyncio.create_task(tts.synthesize("first"))
+        while not started.is_set():
+            await asyncio.sleep(0.001)
+        second = asyncio.create_task(tts.synthesize("second"))
+        await asyncio.sleep(0)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        release.set()
+
+        result = await asyncio.wait_for(second, 5)
+
+        assert result.duration == pytest.approx(30 / 22050)

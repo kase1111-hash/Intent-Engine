@@ -12,6 +12,7 @@ No API key required -- runs entirely on the local machine.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import importlib.metadata
 import logging
 import re
@@ -45,6 +46,22 @@ _TIMEOUT_BASE_S = 5.0
 _TIMEOUT_PER_CHAR_S = 0.01
 
 _WAV_HEADER_BYTES = 44
+
+
+def _default_voice() -> str | None:
+    """The voice a new pyttsx3 eSpeak engine starts on, or ``None`` if it cannot be told.
+
+    eSpeak's voice is process-wide and ``pyttsx3.init()`` returns a live engine
+    without resetting it, so an instance with no configured voice has to set the
+    default itself rather than trust the engine it gets.  pyttsx3 has no public
+    accessor for it, so this reads the driver's class attribute.
+    """
+    try:
+        driver = importlib.import_module("pyttsx3.drivers.espeak")
+    except Exception:  # no eSpeak driver here: other OS, missing libespeak, or a stub
+        return None
+    voice = getattr(getattr(driver, "EspeakDriver", None), "_defaultVoice", None)
+    return voice if isinstance(voice, str) and voice else None
 
 
 def _emotion_volume(volume: float, volume_db: float) -> float:
@@ -107,13 +124,23 @@ class ESpeakTTS(TTSProvider):
     ----------
     voice:
         Voice name or ID to use (e.g., ``"english"``, ``"english+f3"``).
-        If ``None``, uses the system default.
+        If ``None``, uses eSpeak's default voice, whatever other
+        ``ESpeakTTS`` instances in the process are configured with.
     rate_wpm:
         Base speaking rate in words per minute.  Defaults to ``175``.
     volume:
         Volume of the loudest emotion (0.0 - 1.0).  Defaults to ``1.0``.
         Other emotions are quieter by the difference in their decibel
         offsets, so neutral speech is below this level.
+
+    Notes
+    -----
+    eSpeak has one set of voice, rate and volume settings per process, so
+    every instance takes turns on it (one lock for the whole process) and
+    each call sets all three itself.  Synthesis runs in a worker thread and
+    cannot be interrupted: cancelling a call stops the wait, but the
+    synthesis finishes, its audio is discarded and calls queued behind it
+    still run in turn.  Bound the calls in flight if you apply timeouts.
     """
 
     def __init__(
@@ -139,8 +166,12 @@ class ESpeakTTS(TTSProvider):
 
         engine = pyttsx3.init()
 
-        if self._voice:
-            engine.setProperty("voice", self._voice)
+        # Always set the voice: eSpeak's voice is process-wide, and init() returns the
+        # live engine, with whatever voice the last call left, while anything still
+        # holds it.
+        voice = self._voice or _default_voice()
+        if voice:
+            engine.setProperty("voice", voice)
 
         return engine
 
@@ -198,6 +229,9 @@ class ESpeakTTS(TTSProvider):
                 engine.setProperty("rate", adjusted_rate)
                 engine.setProperty("volume", adjusted_volume)
                 errors = self._run_engine(engine, text, tmp_path)
+                # pyttsx3 destroys an engine, and clears eSpeak's synthesis callback, when
+                # the last reference goes, so let go of it while the lock is still held.
+                del engine
 
             try:
                 audio_bytes = Path(tmp_path).read_bytes()
@@ -211,9 +245,11 @@ class ESpeakTTS(TTSProvider):
         if errors:
             logger.warning("pyttsx3 reported an error while synthesising: %s", errors[-1])
 
-        logger.info(
-            "eSpeak synthesized %d bytes (emotion=%s, rate=%d wpm, volume=%.2f)",
-            len(audio_bytes),
+        # The emotion, and the rate and volume it maps to, are not logged above DEBUG
+        # level: emotional data is sensitive.
+        logger.info("eSpeak synthesized %d bytes", len(audio_bytes))
+        logger.debug(
+            "eSpeak settings (emotion=%s, rate=%d wpm, volume=%.2f)",
             emotion,
             adjusted_rate,
             adjusted_volume,

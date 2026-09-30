@@ -19,6 +19,7 @@ from intent_engine.errors import TTSError
 from intent_engine.tts import espeak
 from intent_engine.tts.base import EMOTION_VOICE_MAP, SynthesisResult, TTSProvider
 from intent_engine.tts.espeak import ESpeakTTS
+from tests.tts.fake_pyttsx3 import DEFAULT_VOICE, install_fake_pyttsx3
 from tests.tts.helpers import Heartbeat, wav_bytes
 
 
@@ -69,20 +70,31 @@ class TestESpeakTTSEngine:
         finally:
             sys.modules.pop("pyttsx3", None)
 
-    def test_create_engine_no_voice(self) -> None:
-        mock_pyttsx3 = types.ModuleType("pyttsx3")
+    def test_create_engine_no_voice_sets_the_driver_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # eSpeak's voice is process-wide and init() may return an engine another call
+        # left on its own voice, so an unconfigured instance sets the default explicitly.
         mock_engine = MagicMock()
-        mock_pyttsx3.init = MagicMock(return_value=mock_engine)  # type: ignore[attr-defined]
-        sys.modules["pyttsx3"] = mock_pyttsx3
+        install_fake_pyttsx3(monkeypatch)
+        sys.modules["pyttsx3"].init = MagicMock(return_value=mock_engine)  # type: ignore[attr-defined]
 
-        try:
-            tts = ESpeakTTS()
-            tts._create_engine()
+        ESpeakTTS()._create_engine()
 
-            # setProperty should NOT be called for voice when voice is None
-            mock_engine.setProperty.assert_not_called()
-        finally:
-            sys.modules.pop("pyttsx3", None)
+        mock_engine.setProperty.assert_called_once_with("voice", DEFAULT_VOICE)
+
+    def test_create_engine_no_voice_and_no_known_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Without eSpeak's driver (another OS, or libespeak missing) there is nothing to set.
+        mock_engine = MagicMock()
+        install_fake_pyttsx3(monkeypatch)
+        sys.modules["pyttsx3"].init = MagicMock(return_value=mock_engine)  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "pyttsx3.drivers.espeak", None)
+
+        ESpeakTTS()._create_engine()
+
+        mock_engine.setProperty.assert_not_called()
 
 
 class TestESpeakTTSSynthesize:

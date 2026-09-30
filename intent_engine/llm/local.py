@@ -12,7 +12,9 @@ No external API key required -- everything runs on the local machine.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 from typing import Any
 
 from intent_engine.llm.base import (
@@ -37,7 +39,11 @@ class LocalLLM(LLMProvider):
     base_url:
         URL of an OpenAI-compatible API server (e.g., Ollama at
         ``http://localhost:11434/v1``).  Mutually exclusive with
-        ``model_path``.
+        ``model_path``.  The client honours the ``HTTP_PROXY`` and
+        ``HTTPS_PROXY`` environment variables, so when a proxy is configured
+        put the server's host in ``NO_PROXY`` (for example
+        ``NO_PROXY=localhost,127.0.0.1,::1``), or the prompt and transcript
+        go to the proxy instead of the local server.
     model:
         Model name for the OpenAI-compatible server (e.g., ``"llama3"``).
         Ignored when using ``model_path``.
@@ -49,6 +55,18 @@ class LocalLLM(LLMProvider):
         Maximum tokens in the response.
     temperature:
         Sampling temperature (0.0-2.0).
+
+    Notes
+    -----
+    Loading a GGUF file and generating a reply are slow and blocking, so the
+    llama.cpp backend runs both in a worker thread and keeps the event loop
+    free.  A ``Llama`` object is not safe to share between threads, so
+    concurrent calls on one instance take turns.  Cancelling a call (or
+    timing it out) stops the wait but cannot stop a generation that is
+    already running, because a thread cannot be interrupted: the generation
+    finishes, its reply is discarded, and calls queued behind it still run in
+    turn.  A caller that applies timeouts should also bound how many calls it
+    has in flight (for example with an ``asyncio.Semaphore``).
     """
 
     def __init__(
@@ -75,9 +93,12 @@ class LocalLLM(LLMProvider):
         self._max_tokens = max_tokens
         self._temperature = temperature
         self._llama: Any = None
+        # Loading is slow and a Llama object is not thread-safe, so the worker
+        # threads take turns.
+        self._lock = threading.Lock()
 
     def _load_llama(self) -> Any:
-        """Lazily load the llama.cpp model on first use."""
+        """Lazily load the llama.cpp model on first use (call with ``self._lock`` held)."""
         if self._llama is None:
             try:
                 from llama_cpp import Llama
@@ -130,21 +151,26 @@ class LocalLLM(LLMProvider):
             return await self._interpret_via_server(iml_input, system)
         return await self._interpret_via_llama(iml_input, system)
 
+    def _infer_llama(self, iml_input: str, system: str) -> Any:
+        """Load the model if needed and run one completion (runs in a worker thread)."""
+        with self._lock:
+            llama = self._load_llama()
+            return llama.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": iml_input},
+                ],
+                max_tokens=self._max_tokens,
+                temperature=self._temperature,
+                response_format={"type": "json_object"},
+            )
+
     async def _interpret_via_llama(
         self, iml_input: str, system: str
     ) -> InterpretationResult:
         """Run inference using llama.cpp."""
-        llama = self._load_llama()
-
-        response = llama.create_chat_completion(
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": iml_input},
-            ],
-            max_tokens=self._max_tokens,
-            temperature=self._temperature,
-            response_format={"type": "json_object"},
-        )
+        # Model loading and generation take seconds to minutes; keep them off the event loop.
+        response = await asyncio.to_thread(self._infer_llama, iml_input, system)
 
         result = parse_interpretation(
             chat_completion_text(response, "llama.cpp"), "llama.cpp"
@@ -169,9 +195,11 @@ class LocalLLM(LLMProvider):
                 "Install it with: pip install intent-engine[openai]"
             ) from exc
 
-        # The client is opened per call: the sync wrappers run every call in a
-        # fresh event loop (asyncio.run), and a client keeps its connections
-        # bound to the loop that first used it.
+        # The client is opened per call, not cached: an async client keeps its
+        # connections bound to the event loop that first used it, and this adapter
+        # can be awaited from a different loop each time (a caller that runs
+        # asyncio.run per call, or an engine whose sync-wrapper loop was
+        # recreated after close() or a fork).
         async with AsyncOpenAI(api_key="not-needed", base_url=self._base_url) as client:
             response = await client.chat.completions.create(
                 model=self._model,

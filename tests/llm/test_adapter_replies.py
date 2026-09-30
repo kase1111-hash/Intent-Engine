@@ -119,6 +119,11 @@ REJECTED = {
     "dict intent": json.dumps({**GOOD, "intent": {"a": 1}}),
     "empty response_text": json.dumps({**GOOD, "response_text": "  "}),
     "empty intent": json.dumps({**GOOD, "intent": ""}),
+    "two objects": f"You said {json.dumps({**GOOD, 'intent': 'delete_all_files'})}. {GOOD_JSON}",
+    "truncated outer object holding a complete one": (
+        '{"intent": "cancel", "meta": ' + GOOD_JSON + ', "response_text": "trunc'
+    ),
+    "huge integer": '{"intent": ' + "9" * 5000 + "}",
 }
 
 
@@ -193,6 +198,32 @@ class TestClaudeContentBlocks:
         with pytest.raises(LLMError, match="max_tokens"):
             asyncio.run(ClaudeLLM(api_key="k", max_tokens=64).interpret(IML))
 
+    @pytest.mark.parametrize(
+        "blocks",
+        [[], [thinking_block()], [text_block("")], [thinking_block(), text_block("  ")]],
+        ids=["empty", "thinking only", "empty text", "thinking and blank text"],
+    )
+    def test_a_budget_used_up_before_any_text_names_max_tokens(
+        self, monkeypatch: pytest.MonkeyPatch, blocks: list[object]
+    ) -> None:
+        # The usual way to hit the limit: thinking uses all of it and no text follows.
+        install_anthropic(monkeypatch, blocks, stop_reason="max_tokens")
+        with pytest.raises(LLMError, match="max_tokens=64.*raise max_tokens"):
+            asyncio.run(ClaudeLLM(api_key="k", max_tokens=64).interpret(IML))
+
+    def test_truncation_inside_a_complete_looking_object_names_max_tokens(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cut = '{"intent": "cancel", "meta": ' + GOOD_JSON + ', "response_text": "tru'
+        install_anthropic(monkeypatch, [text_block(cut)], stop_reason="max_tokens")
+        with pytest.raises(LLMError, match="max_tokens"):
+            asyncio.run(ClaudeLLM(api_key="k", max_tokens=64).interpret(IML))
+
+    def test_a_refusal_wins_over_the_token_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        install_anthropic(monkeypatch, [], stop_reason="refusal")
+        with pytest.raises(LLMError, match="declined"):
+            asyncio.run(ClaudeLLM(api_key="k", max_tokens=64).interpret(IML))
+
 
 class TestOpenAIStyleCompletions:
     @pytest.mark.parametrize("provider", ["openai", "local-server"])
@@ -209,7 +240,7 @@ class TestOpenAIStyleCompletions:
             asyncio.run(llm.interpret(IML))
 
     @pytest.mark.parametrize("provider", ["openai", "local-server"])
-    def test_refusal_message_is_reported(
+    def test_refusal_is_reported_without_quoting_it(
         self, monkeypatch: pytest.MonkeyPatch, provider: str
     ) -> None:
         install_openai(monkeypatch, None, refusal="I can't help with that.")
@@ -218,8 +249,9 @@ class TestOpenAIStyleCompletions:
             if provider == "openai"
             else LocalLLM(base_url="http://localhost:1/v1")
         )
-        with pytest.raises(LLMError, match="can't help"):
+        with pytest.raises(LLMError, match="refused to answer") as info:
             asyncio.run(llm.interpret(IML))
+        assert "can't help" not in str(info.value)
 
     def test_llama_without_choices_is_an_llm_error(self) -> None:
         llm = LocalLLM(model_path="/m.gguf")

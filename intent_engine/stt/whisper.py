@@ -36,6 +36,14 @@ class WhisperSTT(STTProvider):
     language:
         Optional language code (e.g., ``"en"``).  If ``None``, Whisper
         auto-detects the language.
+
+    Notes
+    -----
+    Loading the model and decoding run in a worker thread, one call at a
+    time per instance.  A thread cannot be interrupted: cancelling a call
+    stops the wait, but the decode finishes, its result is discarded and
+    calls queued behind it still run in turn.  Bound the calls in flight if
+    you apply timeouts.
     """
 
     def __init__(

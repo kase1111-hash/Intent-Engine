@@ -110,8 +110,12 @@ class TestParseInterpretation:
         raw = 'Result: {"intent": "a", "response_text": "use {x} here", "suggested_emotion": "sad"}'
         assert parse_interpretation(raw, "Test").response_text == "use {x} here"
 
-    def test_error_names_the_source_and_quotes_the_start_of_the_reply(self) -> None:
-        with pytest.raises(LLMError, match=r"Widget returned non-JSON response: oops"):
+    def test_error_names_the_source_and_the_reply_length_but_not_the_reply(self) -> None:
+        # The reply can echo the user's words, so it stays out of the message (see
+        # test_error_privacy.py); only its length is reported.
+        with pytest.raises(
+            LLMError, match=r"^Widget returned non-JSON response \(reply length 4\)$"
+        ):
             parse_interpretation("oops", "Widget")
 
     def test_deeply_nested_reply_is_an_llm_error(self) -> None:
@@ -185,7 +189,7 @@ class TestChatCompletionText:
         with pytest.raises(LLMError, match="Test returned no text"):
             chat_completion_text(response, "Test")
 
-    def test_refusal_is_quoted(self) -> None:
+    def test_refusal_is_reported_without_quoting_it(self) -> None:
         response = {"choices": [{"message": {"content": None, "refusal": "No can do."}}]}
-        with pytest.raises(LLMError, match="refused to answer: No can do."):
+        with pytest.raises(LLMError, match=r"^Test refused to answer \(refusal length 10\)$"):
             chat_completion_text(response, "Test")

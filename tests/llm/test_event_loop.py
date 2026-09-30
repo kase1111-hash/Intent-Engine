@@ -1,7 +1,8 @@
 """The adapters must work when every call runs in a new event loop.
 
-``IntentEngine``'s ``*_sync`` wrappers call ``asyncio.run()`` per call.  An
-async HTTP client keeps its pooled connections bound to the loop that first used
+A caller can run each call in a fresh loop, as repeated ``asyncio.run(llm.interpret(...))``
+does.  (``IntentEngine``'s ``*_sync`` wrappers share one loop and do not exercise this.)
+An async HTTP client keeps its pooled connections bound to the loop that first used
 them, so an adapter that caches its client fails on the next loop with
 ``RuntimeError: Event loop is closed``.  The fake server keeps connections
 alive so that a pooled connection really is there to be reused.

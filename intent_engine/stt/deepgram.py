@@ -86,24 +86,36 @@ class DeepgramSTT(STTProvider):
                 f"The installed deepgram-sdk cannot be used by DeepgramSTT ({exc}). "
                 "It needs deepgram-sdk>=5,<8: pip install -U 'deepgram-sdk>=5,<8'"
             ) from exc
+        # A dependency of every deepgram-sdk release that has AsyncDeepgramClient, so
+        # it is installed whenever this line is reached; type checking without the
+        # optional extras cannot see it.
+        import httpx  # type: ignore[import-not-found,unused-ignore]
 
         path = Path(audio_path)
         if not path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
         audio = await asyncio.to_thread(path.read_bytes)
-        client = AsyncDeepgramClient(api_key=self._api_key)
-        try:
-            response = await client.listen.v1.media.transcribe_file(
-                request=audio,
-                model=self._model,
-                language=self._language,
-                smart_format=True,
-                utterances=True,
-                punctuate=True,
-            )
-        except Exception as exc:
-            raise STTError(f"Deepgram request failed: {type(exc).__name__}: {exc}") from exc
+
+        # The SDK client has no close(): the httpx client it builds for itself keeps its
+        # keep-alive connections open until it is garbage collected.  So the adapter owns
+        # the httpx client, one per call (a client keeps its connections bound to the
+        # event loop that first used it, and this adapter can be awaited from a different
+        # loop each time), and closes it on every path.  The timeout and redirect
+        # settings are the SDK's own defaults, which it applies only to a client it builds.
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as http_client:
+            client = AsyncDeepgramClient(api_key=self._api_key, httpx_client=http_client)
+            try:
+                response = await client.listen.v1.media.transcribe_file(
+                    request=audio,
+                    model=self._model,
+                    language=self._language,
+                    smart_format=True,
+                    utterances=True,
+                    punctuate=True,
+                )
+            except Exception as exc:
+                raise STTError(f"Deepgram request failed: {type(exc).__name__}: {exc}") from exc
 
         # A request accepted for callback delivery answers with a request id only.
         results = getattr(response, "results", None)

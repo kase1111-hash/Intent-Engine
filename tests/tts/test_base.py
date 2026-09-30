@@ -174,10 +174,13 @@ class TestEmotionNormalisation:
     def test_unknown_labels_fall_back_to_neutral(self, raw: str) -> None:
         assert get_voice_params(raw) is EMOTION_VOICE_MAP["neutral"]
 
-    def test_unknown_label_is_reported(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_unknown_label_is_reported_without_naming_it(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Emotional data is sensitive: the label is only logged at DEBUG.
         with caplog.at_level(logging.WARNING, logger="intent_engine.tts.base"):
             normalize_emotion("excited")
-        assert "excited" in caplog.text
+        assert "excited" not in caplog.text
         assert "neutral" in caplog.text
 
     def test_non_string_value_is_reported_by_type(
@@ -198,7 +201,7 @@ class TestEmotionNormalisation:
     def test_overlong_unknown_label_is_truncated_in_the_log(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        with caplog.at_level(logging.WARNING, logger="intent_engine.tts.base"):
+        with caplog.at_level(logging.DEBUG, logger="intent_engine.tts.base"):
             normalize_emotion("x" * 5000)
         assert len(caplog.text) < 500
 
@@ -227,6 +230,38 @@ class TestStripSSML:
     def test_entities_are_decoded(self) -> None:
         assert strip_ssml("<speak><s>Tom &amp; Jerry &lt;3</s></speak>") == "Tom & Jerry <3"
 
+    @pytest.mark.parametrize(
+        ("body", "spoken"),
+        [
+            ("I have 3 &lt; 5 things", "I have 3 < 5 things"),
+            ("Say &quot;hi&quot; &amp; &apos;bye&apos;", "Say \"hi\" & 'bye'"),
+            ("A &#65; and &#x42; and &#x1F600;", "A A and B and \U0001f600"),
+            ("&amp;lt; stays escaped once", "&lt; stays escaped once"),
+        ],
+    )
+    def test_xml_entities_are_decoded_once(self, body: str, spoken: str) -> None:
+        assert strip_ssml(f"<speak>{body}</speak>") == spoken
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "R&D&copy 2020",  # HTML entities without a semicolon are not decoded
+            "fish&notes",
+            "caf&eacute; is not an XML entity",  # only the five XML ones are defined
+            "&#0; &#xD800; &#x110000; &#99999999999999999999;",  # not characters
+            "&amp",
+        ],
+    )
+    def test_anything_that_is_not_an_xml_entity_is_left_alone(self, body: str) -> None:
+        assert strip_ssml(f"<speak>{body}</speak>") == body
+
+    def test_a_stray_less_than_sign_does_not_swallow_the_words_after_it(self) -> None:
+        # Unescaped, so not valid SSML, but silently losing words is the worse outcome.
+        assert strip_ssml("<speak>I have 3 < 5 things and 7 > 2</speak>") == (
+            "I have 3 < 5 things and 7 > 2"
+        )
+        assert strip_ssml("<speak>1 <5 and 7> 2</speak>") == "1 <5 and 7> 2"
+
     def test_surrounding_whitespace_and_xml_declaration(self) -> None:
         ssml = '  <?xml version="1.0"?>\n<speak><s>Hi</s></speak>\n'
         assert strip_ssml(ssml) == "Hi"
@@ -236,8 +271,21 @@ class TestStripSSML:
 
     @pytest.mark.parametrize(
         "body",
-        ["<" * 100_000, "<a" * 100_000, "<>" * 50_000, " <" * 50_000],
-        ids=["lt", "lt-letter", "lt-gt", "space-lt"],
+        [
+            "<" * 100_000,
+            "<a" * 100_000,
+            "<>" * 50_000,
+            " <" * 50_000,
+            "<!" * 100_000,
+            "&" * 100_000,
+            "&#" * 50_000,
+            "&#" + "9" * 100_000 + ";",
+            "&#x" + "f" * 100_000 + ";",
+        ],
+        ids=[
+            "lt", "lt-letter", "lt-gt", "space-lt", "lt-bang", "amp", "amp-hash", "huge-decimal",
+            "huge-hex",
+        ],
     )
     def test_adversarial_input_is_handled_in_linear_time(self, body: str) -> None:
         # Unmatched "<" runs took seconds (quadratic) with a naive tag pattern.

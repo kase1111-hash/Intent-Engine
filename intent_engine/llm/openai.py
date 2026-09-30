@@ -89,9 +89,11 @@ class OpenAILLM(LLMProvider):
         if context:
             system = f"{system}\n\n## Additional Context\n{context}"
 
-        # The client is opened per call: the sync wrappers run every call in a
-        # fresh event loop (asyncio.run), and a client keeps its connections
-        # bound to the loop that first used it.
+        # The client is opened per call, not cached: an async client keeps its
+        # connections bound to the event loop that first used it, and this adapter
+        # can be awaited from a different loop each time (a caller that runs
+        # asyncio.run per call, or an engine whose sync-wrapper loop was
+        # recreated after close() or a fork).
         async with AsyncOpenAI(api_key=self._api_key) as client:
             response = await client.chat.completions.create(
                 model=self._model,
