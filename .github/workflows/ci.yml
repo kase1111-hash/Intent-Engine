@@ -77,7 +77,10 @@ jobs:
   # The provider SDKs are optional extras, so the jobs above skip every test
   # that needs one. Those tests are the only ones that see an SDK release
   # break an adapter (the mocked tests cannot), so run them against the real
-  # SDKs. Fake servers bind 127.0.0.1; no network or API keys are needed.
+  # SDKs (and, for eSpeak, the real system library). Fake servers bind
+  # 127.0.0.1; no network or API keys are needed. Whisper, Coqui and llama.cpp
+  # are left out on purpose: they pull in PyTorch or need model files, so those
+  # adapters are only covered by stand-in tests.
   sdk-contracts:
     runs-on: ubuntu-latest
     needs: lint
@@ -89,14 +92,21 @@ jobs:
         with:
           python-version: "3.12"
 
+      # eSpeak is the one adapter whose real engine is a system library.
+      - name: Install the eSpeak NG system library
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends espeak-ng
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install "$PROSODY_PROTOCOL_API"
-          pip install -e ".[dev,claude,openai,deepgram,assemblyai,elevenlabs,examples]"
+          pip install -e ".[dev,claude,openai,deepgram,assemblyai,elevenlabs,espeak,examples]"
 
+      # REQUIRE_REAL_ESPEAK turns a skip of the real-eSpeak tests into a failure.
       - name: Run the SDK-backed tests
         run: pytest -q -p no:cacheprovider
+        env:
+          REQUIRE_REAL_ESPEAK: "1"
 
   security:
     runs-on: ubuntu-latest

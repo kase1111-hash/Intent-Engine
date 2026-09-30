@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -8,6 +8,7 @@ version = "0.8.0"
 description = "Prosody-aware AI system that preserves and interprets emotional intent in voice conversations."
 readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
 authors = [{ name = "Kase Branham" }]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -27,8 +28,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-whisper = ["openai-whisper>=20230918", "prosody-protocol[audio]>=0.1.0a3"]
-deepgram = ["deepgram-sdk>=5,<8"]
+whisper = ["openai-whisper>=20231106", "prosody-protocol[audio]>=0.1.0a3"]
+deepgram = ["deepgram-sdk>=5,<8", "httpx>=0.25"]
 assemblyai = ["assemblyai>=0.20"]
 claude = ["anthropic>=0.40"]
 openai = ["openai>=1.56"]
@@ -50,9 +51,10 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "pytest-asyncio>=0.21",
-    "ruff>=0.1",
+    "ruff>=0.13",
     "mypy>=1.5",
-    "types-PyYAML>=6.0",
+    "types-PyYAML>=6.0.12.20260510",
+    "httpx>=0.25",
     "pre-commit>=3.0",
 ]
 all = [

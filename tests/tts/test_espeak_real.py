@@ -1,15 +1,18 @@
 """ESpeakTTS against the real pyttsx3 + eSpeak stack.
 
 Skipped unless pyttsx3 (2.99 or later) and a working eSpeak / espeak-ng
-library are installed, which the CI environment does not have.  Where they
-are, these tests check what the stubbed tests in ``test_espeak.py`` cannot:
-that longer text and the emotion-to-volume mapping hold up with real audio.
+library are installed.  The ``sdk-contracts`` CI job installs both and sets
+``REQUIRE_REAL_ESPEAK=1``, which turns every skip below into a failure so the
+job cannot quietly stop running these tests.  Where they run, they check what
+the stubbed tests in ``test_espeak.py`` cannot: that longer text and the
+emotion-to-volume mapping hold up with real audio.
 """
 
 from __future__ import annotations
 
 import asyncio
 import io
+import os
 import struct
 import sys
 import wave
@@ -20,20 +23,30 @@ from intent_engine.tts import espeak
 from intent_engine.tts.espeak import ESpeakTTS
 
 
+def _unavailable(reason: str) -> None:
+    """Skip, unless CI has said these tests must run."""
+    if os.environ.get("REQUIRE_REAL_ESPEAK") == "1":
+        pytest.fail(f"REQUIRE_REAL_ESPEAK=1 but the real eSpeak stack is unusable: {reason}")
+    pytest.skip(reason)
+
+
 @pytest.fixture(scope="module", autouse=True)
 def real_espeak() -> None:
-    pytest.importorskip("pyttsx3")
+    try:
+        import pyttsx3
+    except ImportError:
+        _unavailable("pyttsx3 is not installed")
+        return
     if not sys.platform.startswith("linux"):
-        pytest.skip("only the Linux eSpeak driver is exercised")
+        _unavailable("only the Linux eSpeak driver is exercised")
     version = espeak._pyttsx3_version()
     if version is None or version < (2, 99):
-        pytest.skip("needs pyttsx3 2.99 or later (older versions need the ffmpeg binary)")
-    import pyttsx3
+        _unavailable("needs pyttsx3 2.99 or later (older versions need the ffmpeg binary)")
 
     try:
         pyttsx3.init()
     except Exception as exc:  # no libespeak-ng, or no usable voice
-        pytest.skip(f"eSpeak is not usable here: {exc}")
+        _unavailable(f"eSpeak is not usable here: {exc}")
 
 
 def _wav_stats(audio: bytes) -> tuple[int, int]:
