@@ -2,30 +2,150 @@
 
 Example platform adapters for using Intent Engine with common voice platforms.
 
-These are **example code**, not part of the core `intent_engine` package. They demonstrate how to wire Intent Engine into real-world platforms.
+These are **example code**, not part of the core `intent_engine` package (they are not included in the wheel). They demonstrate how to wire Intent Engine into real-world platforms. Run and import them from a checkout of the repository, from the repository root:
+
+```python
+from examples.integrations.rest_server import create_app
+from examples.integrations.twilio_voice import TwilioVoiceHandler
+from examples.integrations.slack_bot import SlackBotHelper
+from examples.integrations.discord_bot import DiscordBotHelper
+```
+
+To use one in your own project, copy the module together with `_common.py` (shared helpers) and change the `from ._common import ...` lines to match where you put it.
 
 ## Files
 
 | File | Platform | Description |
 |------|----------|-------------|
-| `server.py` | FastAPI | REST API server exposing `/process`, `/generate`, `/synthesize` endpoints |
-| `twilio.py` | Twilio | Voice webhook handler that processes calls through the pipeline |
-| `slack.py` | Slack | Bot helper for processing audio files shared in channels |
-| `discord.py` | Discord | Bot helper for processing audio attachments and voice |
+| `rest_server.py` | FastAPI | REST API server exposing `/process`, `/generate`, `/synthesize` endpoints |
+| `twilio_voice.py` | Twilio | Voice webhook handler that processes recordings through the pipeline and answers with TwiML |
+| `slack_bot.py` | Slack | Bot helper for processing audio files shared in channels |
+| `discord_bot.py` | Discord | Bot helper for processing audio attachments and voice messages |
+| `_common.py` | (all) | Shared helpers: size-capped downloads from allow-listed hosts, audio type detection, emotion-abstention check |
 
-## Usage
+The modules are named `*_voice`, `*_bot` and `rest_server` on purpose: a file called `discord.py`, `twilio.py` or `slack.py` would shadow the real SDK whenever its folder is on `sys.path`.
 
-These examples require additional dependencies:
+## Installing dependencies
+
+The examples need packages that `intent-engine` does not depend on. Install what the example you use needs, on top of `pip install -e ".[dev]"` (or your normal install of `intent-engine`), or install all of them with the `examples` extra (`pip install -e ".[examples]"`). `prosody-protocol` is not on PyPI, so `prosody-protocol[api]` below only resolves once it has been installed from GitHub, as [CONTRIBUTING.md](../../CONTRIBUTING.md) shows (installing `intent-engine` needs that anyway):
+
+| Example | Packages |
+|---------|----------|
+| `rest_server.py` | `fastapi`, `uvicorn`, `python-multipart` (uploads; FastAPI fails without it), `httpx` (tests), and `prosody-protocol[api]` (the request-size middleware comes from its REST server; needs 0.1.0a3 or newer) |
+| `twilio_voice.py` | `httpx` (downloads recordings), `twilio` (only for `validate_twilio_signature`) |
+| `slack_bot.py` | `httpx` (downloads files), `slack_sdk` (only for `verify_signature`, and to post the returned message) |
+| `discord_bot.py` | `httpx` (downloads attachments), `discord.py` (builds the message payload) |
 
 ```bash
-# For the REST server
-pip install fastapi uvicorn
+# REST server
+pip install fastapi uvicorn python-multipart httpx "prosody-protocol[api]"
 
-# For Twilio integration
-pip install httpx  # for downloading recordings
-
-# For Slack/Discord
-pip install httpx  # for downloading attachments
+# Twilio / Slack / Discord
+pip install httpx twilio
+pip install httpx slack_sdk
+pip install httpx discord.py
 ```
 
-See each file's module docstring for usage examples.
+The examples call `IntentEngine()`, so the engine's own providers must be installed and configured too. The defaults are Whisper for STT, Claude for the LLM and ElevenLabs for TTS: `pip install -e ".[whisper,claude,elevenlabs]"` with `ANTHROPIC_API_KEY` and `ELEVENLABS_API_KEY` set. Pass other providers to `IntentEngine(...)` (or set `INTENT_STT_PROVIDER`, `INTENT_LLM_PROVIDER`, `INTENT_TTS_PROVIDER` for the REST server).
+
+**ffmpeg.** `prosody_protocol` reads WAV, AIFF, FLAC and MP3 itself; Ogg/Opus (Discord voice messages), WebM and M4A (common Slack clips) need `ffmpeg` on `PATH`. The default Whisper STT provider (`openai-whisper`) runs `ffmpeg` to load every file, so with it install ffmpeg whatever the format; without it the examples answer with their generic failure reply and the reason is only in the log. With a cloud STT provider and no ffmpeg, an Ogg, WebM or M4A clip is still transcribed, but its prosody cannot be analysed: the turn continues with text-only IML and no emotion, and a warning goes to the log.
+
+## REST server
+
+```bash
+INTENT_API_KEY=change-me \
+    uvicorn --factory examples.integrations.rest_server:create_app_from_env
+```
+
+`create_app_from_env()` builds the engine from `INTENT_STT_PROVIDER`, `INTENT_LLM_PROVIDER` and `INTENT_TTS_PROVIDER` (unset means the `IntentEngine` defaults) and reads the API key from `INTENT_API_KEY`. An `INTENT_API_KEY` that is set but empty (what `INTENT_API_KEY=${INTENT_API_KEY}` expands to when the variable is undefined) is a startup error, not "no authentication": unset the variable to run without a key. To configure things in code, build the app yourself (`uvicorn your_module:app`):
+
+```python
+from examples.integrations.rest_server import create_app
+
+# reads DEEPGRAM_API_KEY, ANTHROPIC_API_KEY and ELEVENLABS_API_KEY from the environment
+app = create_app(stt_provider="deepgram", llm_provider="claude", api_key="change-me")
+```
+
+```bash
+curl -H "X-API-Key: change-me" -F audio=@clip.wav http://127.0.0.1:8000/process
+```
+
+**This is a demo server. Set an API key before exposing it to anything but your own machine.** Every endpoint spends STT/LLM/TTS quota. Without `INTENT_API_KEY` / `api_key=` anyone who can reach the port can use your provider accounts (a warning is logged). Keep the default bind address (`127.0.0.1`), or put the server behind TLS and a rate-limiting reverse proxy; nothing in the example limits how many requests one client makes.
+
+| Status | When |
+|--------|------|
+| 401 | Missing or wrong `X-API-Key` (when a key is configured; `/health` is the only open path, so `/docs` needs the header too. Behind a path prefix (`uvicorn --root-path /api`) `/health` is the route the prefix leads to, `/api/health`) |
+| 413 | Request body over the limit: `max_upload_bytes` (default 25 MiB) for the audio upload to `/process`, a few MB for the JSON of every other endpoint, whatever `Content-Type` the request claims |
+| 415 | The upload is not WAV, AIFF, FLAC, MP3, Ogg, WebM or M4A (detected from the first bytes of the content, not the file name) |
+| 422 | Empty upload, invalid IML, or a text field that is empty/too long |
+| 502 | The STT, LLM or TTS provider failed, including an STT provider that cannot decode an upload whose first bytes look like audio |
+| 500 | Anything else |
+
+Error responses never contain exception text (which can hold temp paths, provider URLs or key fragments); they quote an `error id` that is logged next to the real cause. `/process` returns `emotion: "neutral"` with `confidence: 0.0` when the engine reported no emotion. Audio that the STT provider transcribes but the prosody analysis cannot read (too short, corrupt) is answered with the transcript and no prosody, not with an error.
+
+## Twilio
+
+```python
+handler = TwilioVoiceHandler(engine)
+
+# In your webhook route:
+if not TwilioVoiceHandler.validate_twilio_signature(url, form, signature, auth_token):
+    ...  # respond 403
+twiml = await handler.handle_voice(form["RecordingUrl"], form)
+```
+
+- Validate `X-Twilio-Signature` on every request. `handle_voice` trusts the recording URL; the default download only accepts `https://*.twilio.com` and at most 25 MiB.
+- `validate_twilio_signature` returns `False` for a wrong, missing (`None`) or malformed signature or URL. It raises `ValueError` when the auth token is empty (say, `TWILIO_AUTH_TOKEN` unset): a signature made with an empty key can be computed by anyone, so this is a configuration error, not a check that passes.
+- The reply is spoken with Twilio's `<Say>` voice. `IntentEngine` returns audio bytes, never a URL, and `<Play>` needs a URL, so to play the engine's emotion-mapped TTS voice pass `audio_publisher=`, an async function that stores an `Audio` somewhere Twilio can fetch and returns its URL (for example a route in your own app that serves the bytes). Without a publisher TTS is not called at all. The reply is spoken with `reply_emotion` (default `"neutral"`), never in the caller's own tone: `Result.suggested_tone` describes the caller, and the canned replies are not an LLM `Response`, so an angry caller's de-escalation reply is not delivered in an angry voice.
+- If HTTP authentication for recording media is enabled in your Twilio console, pass a `download_func` that authenticates to `api.twilio.com`.
+
+## Slack
+
+```python
+helper = SlackBotHelper(engine, bot_token="xoxb-...")
+
+# In your Events API route:
+if not SlackBotHelper.verify_signature(raw_body, request.headers, signing_secret):
+    ...  # respond 401
+message = await helper.process_audio_file(file_url, channel_id, user_id)
+client.chat_postMessage(**message)  # slack_sdk WebClient
+```
+
+- The bot token is only ever sent to `https://*.slack.com`; other URLs are refused, and downloads are capped at 25 MiB (see [Downloads](#downloads)).
+- `verify_signature` returns `False` for a wrong, stale or malformed request. It raises `ValueError` when the signing secret is empty (say, `SLACK_SIGNING_SECRET` unset): `slack_sdk` before 3.43 would accept a signature forged with an empty key, so the example refuses on every version.
+- `handle_file_shared_event` needs the event to carry the file's `mimetype` and `url_private_download`. If the `file_shared` payload you receive holds only the file ID, call `files.info` and pass the enriched event. (Not verified against Slack's current event schema when this example was fixed; check yours.)
+- Messages are cut to Slack's 3000 character block limit and `&`, `<`, `>` in transcripts are escaped, so a transcript cannot notify a channel.
+
+## Discord
+
+```python
+helper = DiscordBotHelper(engine)
+
+payload = await helper.process_audio_attachment(attachment, message.channel, user_id=str(message.author.id))
+await message.channel.send(**payload)
+```
+
+`payload` holds `send()` keyword arguments: `content` (cut to 2000 characters), `embed` (a `discord.Embed`) when an emotion was reported, and `allowed_mentions`, which switches every mention notification off so an `@everyone` in a name or transcript cannot ping the server. Attachments are only downloaded from `cdn.discordapp.com` / `media.discordapp.net`.
+
+## Downloads
+
+Recordings and attachments are fetched by `download_media` in `_common.py`: `https` only, from the allow-listed hosts only, without following redirects, at most 25 MiB, and within 120 seconds in total (a host that sends a byte at a time cannot hold a connection open). It asks for an unencoded body and refuses a response that has a `Content-Encoding`, because the size cap counts decoded bytes and a small gzip body can decode to far more than the cap. Recordings are not sent compressed, so this costs nothing; a custom `download_func` is responsible for its own limits.
+
+Signed CDN links (Discord's `ex`/`is`/`hm` query) are credentials. A failed download is logged with its HTTP status and host only, never the URL. `httpx` itself logs every request URL at `INFO`, so a deployment that handles such links should keep `logging.getLogger("httpx").setLevel(logging.WARNING)`; the examples do not change global logging.
+
+## Emotion is optional
+
+The engine reports `("neutral", 0.0)` when it has no emotion to report. The chat and voice examples only mention an emotion (message text, Slack context block, Discord embed, Twilio escalation replies) when the confidence is at least 0.5; otherwise they show the transcript alone rather than "neutral, 0% confidence".
+
+## Privacy
+
+The Slack and Discord examples post a named user's transcript and the emotion inferred from their voice into a shared channel. Emotional data is sensitive personal data: tell the people who use the channel, get their agreement, and do not run these where people have not opted in. The Slack and Discord examples log user and channel identifiers at DEBUG level only.
+
+## Tests
+
+```bash
+# after the setup in CONTRIBUTING.md (make dev)
+pytest examples
+```
+
+Tests that need an optional package (`fastapi`, `httpx`, `twilio`, `slack_sdk`, `discord.py`, `uvicorn`) skip when it is not installed; everything runs against stub engines and in-process fake HTTP transports, so no provider API key or network access is needed. Plain `pytest` (and `make test`) collects `tests/` and `examples/` together; `pytest examples` runs just these.

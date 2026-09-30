@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -195,6 +196,28 @@ class TestConstitutionalFilterMultipleRules:
 
 class TestConstitutionalFilterEdgeCases:
     def test_empty_features_list(self) -> None:
+        """No spans means nothing was measured, so a measured condition fails.
+
+        This used to assert ``allow`` for any rule, which let a failed or
+        silent analysis satisfy pitch/rate conditions.
+        """
+        rules = [
+            ConstitutionalRule(
+                name="test",
+                triggers=["test"],
+                required_prosody=ProsodyCondition(
+                    emotion=["sincere"], speaking_rate=(2.0, 5.0)
+                ),
+                verification=Verification(method="explicit_confirmation"),
+            ),
+        ]
+        cf = ConstitutionalFilter(rules)
+        decision = cf.evaluate("test", [], emotion="sincere")
+        assert decision.allow is False
+        assert decision.requires_verification is True
+
+    def test_empty_features_list_emotion_only_rule(self) -> None:
+        """An emotion-only rule is decided by the emotion, which is not measured here."""
         rules = [
             ConstitutionalRule(
                 name="test",
@@ -212,8 +235,55 @@ class TestConstitutionalFilterEdgeCases:
         decision = cf.evaluate("anything", features, emotion="angry")
         assert decision.allow is True
 
+    def test_empty_rules_are_reported(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="intent_engine"):
+            ConstitutionalFilter([])
+        assert any("no rules" in r.getMessage() for r in caplog.records)
+
     def test_decision_is_decision_type(self) -> None:
         cf = ConstitutionalFilter([])
         features = [_make_features()]
         decision = cf.evaluate("test", features)
         assert isinstance(decision, Decision)
+
+
+class TestConstitutionalFilterArgumentChecks:
+    """Wrong arguments fail loudly instead of degrading a safety rule."""
+
+    @pytest.mark.parametrize(
+        "rules",
+        [
+            {"destructive": {"triggers": ["delete"]}},  # the dict form of the old README
+            "rules.yaml",
+            [{"triggers": ["delete"]}],
+            ["delete"],
+            [None],
+        ],
+    )
+    def test_rules_must_be_constitutional_rules(self, rules: object) -> None:
+        with pytest.raises(TypeError, match="ConstitutionalRule"):
+            ConstitutionalFilter(rules)  # type: ignore[arg-type]
+
+    def test_any_iterable_of_rules_is_accepted(self) -> None:
+        rule = ConstitutionalRule(name="r", triggers=["delete"])
+        assert len(ConstitutionalFilter(iter([rule])).rules) == 1
+        assert len(ConstitutionalFilter((rule,)).rules) == 1
+
+    def test_the_filter_does_not_alias_the_callers_list(self) -> None:
+        rules = [
+            ConstitutionalRule(
+                name="r",
+                triggers=["delete"],
+                forbidden_prosody=ProsodyCondition(emotion=["angry"]),
+            )
+        ]
+        cf = ConstitutionalFilter(rules)
+        rules.clear()
+        decision = cf.evaluate("delete", [_make_features()], emotion="angry")
+        assert decision.allow is False
+
+    @pytest.mark.parametrize("intent", [None, 42, b"delete", ["delete"]])
+    def test_intent_must_be_a_string(self, intent: object) -> None:
+        cf = ConstitutionalFilter.from_yaml(SAMPLE_RULES_PATH)
+        with pytest.raises(TypeError, match="intent"):
+            cf.evaluate(intent, [_make_features()])  # type: ignore[arg-type]

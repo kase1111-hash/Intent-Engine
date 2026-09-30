@@ -9,8 +9,9 @@ from dataclasses import dataclass
 class Response:
     """Output of ``IntentEngine.generate_response()``.
 
-    Contains the LLM-generated response text and the emotion label to
-    apply during TTS synthesis.
+    Contains the LLM-generated response text, the emotion label to
+    apply during TTS synthesis, and the intent the LLM parsed from the
+    user's input.
     """
 
     text: str
@@ -18,3 +19,12 @@ class Response:
 
     emotion: str
     """Emotion to apply in TTS synthesis."""
+
+    intent: str | None = None
+    """User intent parsed by the LLM (e.g. ``"delete_files"``), or ``None``.
+
+    Pass it to ``IntentEngine.evaluate_result(response.intent, result)``,
+    which also supplies the emotion and its confidence from the ``Result``
+    of the same turn.  (``evaluate_intent()`` takes the emotion as given
+    unless ``emotion_confidence=result.confidence`` is passed too.)
+    """

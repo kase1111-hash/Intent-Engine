@@ -96,6 +96,7 @@ class TestOpenAILLMInterpret:
         mock_chat.completions = mock_completions
 
         mock_client = MagicMock()
+        mock_client.__aenter__.return_value = mock_client
         mock_client.chat = mock_chat
 
         mock_openai.AsyncOpenAI = MagicMock(return_value=mock_client)  # type: ignore[attr-defined]
@@ -142,6 +143,7 @@ class TestOpenAILLMInterpret:
         mock_chat.completions = mock_completions
 
         mock_client = MagicMock()
+        mock_client.__aenter__.return_value = mock_client
         mock_client.chat = mock_chat
 
         mock_openai.AsyncOpenAI = MagicMock(return_value=mock_client)  # type: ignore[attr-defined]
@@ -183,6 +185,7 @@ class TestOpenAILLMInterpret:
         mock_chat.completions = mock_completions
 
         mock_client = MagicMock()
+        mock_client.__aenter__.return_value = mock_client
         mock_client.chat = mock_chat
 
         mock_openai.AsyncOpenAI = MagicMock(return_value=mock_client)  # type: ignore[attr-defined]

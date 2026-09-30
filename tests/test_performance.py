@@ -1,8 +1,12 @@
-"""Performance benchmark suite.
+"""Performance smoke tests for the pipeline operations.
 
-Measures latency of key pipeline operations to ensure they meet
-performance targets from spec Section 9.  Uses lightweight mocks
-so benchmarks run fast in CI.
+Uses lightweight mocks so they run fast in CI.  What each operation does is
+asserted exactly, through the call counts of the mocked providers.  Wall-clock
+bounds are only a smoke check against something pathological (a stray sleep, a
+quadratic loop): they leave two orders of magnitude of headroom over the
+measured cost, so CPU contention on a shared runner cannot fail them.  The
+latency targets of spec Section 9 concern real providers, which mocks cannot
+measure.
 """
 
 from __future__ import annotations
@@ -16,11 +20,9 @@ from unittest.mock import AsyncMock, MagicMock
 from prosody_protocol import (
     ProsodyMapping,
     ProsodyProfile,
-    SpanFeatures,
     ValidationResult,
 )
 
-from intent_engine.engine import IntentEngine
 from tests.conftest import (
     create_mocked_engine,
     make_iml_document,
@@ -47,7 +49,6 @@ def _setup_fast_pipeline(engine):
         return_value="<iml><utterance>Benchmark text</utterance></iml>"
     )
     engine._validator.validate = MagicMock(return_value=ValidationResult(valid=True))
-    engine._emotion_classifier.classify = MagicMock(return_value=("neutral", 0.6))
     engine._llm.interpret = AsyncMock(
         return_value=make_interpretation_result()
     )
@@ -57,15 +58,23 @@ def _setup_fast_pipeline(engine):
 
 
 def _measure_async(coro_factory, iterations=10):
-    """Measure average wall-clock time of an async operation."""
-    # Warm up
-    asyncio.run(coro_factory())
+    """Measure average wall-clock time of an async operation.
 
-    start = time.perf_counter()
-    for _ in range(iterations):
-        asyncio.run(coro_factory())
-    elapsed = time.perf_counter() - start
-    return elapsed / iterations
+    The warm-up call and the timed calls run in one event loop, so the
+    figure is the operation's own cost and not that of creating a loop and
+    its thread pool for every call.  The operation runs ``iterations + 1``
+    times.
+    """
+
+    async def run():
+        await coro_factory()  # warm up
+
+        start = time.perf_counter()
+        for _ in range(iterations):
+            await coro_factory()
+        return (time.perf_counter() - start) / iterations
+
+    return asyncio.run(run())
 
 
 def _measure_sync(func, iterations=10):
@@ -86,10 +95,10 @@ def _measure_sync(func, iterations=10):
 
 
 class TestProcessVoiceInputPerformance:
-    """Latency benchmark for the full STT pipeline."""
+    """Cost of the full STT pipeline."""
 
     def test_process_voice_input_latency(self) -> None:
-        """process_voice_input should complete quickly with mocked providers."""
+        """Without the cache every call runs the pipeline, and quickly."""
         engine = create_mocked_engine()
         _setup_fast_pipeline(engine)
 
@@ -98,70 +107,91 @@ class TestProcessVoiceInputPerformance:
             path = f.name
 
         try:
+            iterations = 20
             avg_time = _measure_async(
                 lambda: engine.process_voice_input(path, use_cache=False),
-                iterations=20,
+                iterations=iterations,
             )
-            # With mocked providers, this should be well under 100ms
-            assert avg_time < 0.1, f"process_voice_input avg latency: {avg_time:.4f}s"
+            # use_cache=False: the warm-up call and each timed call ran STT
+            assert engine._stt.transcribe.await_count == iterations + 1
+            # With mocked providers this takes about a millisecond
+            assert avg_time < 0.5, f"process_voice_input avg latency: {avg_time:.4f}s"
         finally:
             Path(path).unlink()
 
-    def test_process_voice_input_with_cache_is_faster(self) -> None:
-        """Cache hit should be significantly faster than full pipeline."""
+    def test_a_cache_hit_does_not_rerun_the_pipeline(self) -> None:
+        """Repeated calls on one file are served from the cache.
+
+        Which providers ran is exact; the time is only a smoke bound (a hit
+        costs a fraction of a millisecond on a running loop).
+        """
         engine = create_mocked_engine()
         _setup_fast_pipeline(engine)
+        stages = [
+            engine._stt.transcribe,
+            engine._analyzer.analyze,
+            engine._assembler.assemble,
+            engine._validator.validate,
+        ]
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(b"RIFF fake audio data")
             path = f.name
 
-        try:
-            # Prime cache
-            asyncio.run(engine.process_voice_input(path))
+        async def prime_then_hit(hits: int) -> float:
+            await engine.process_voice_input(path)
+            ran_once = [stage.call_count for stage in stages]
+            assert ran_once[0] == 1, "the first call must run STT"
 
-            # Measure cache hit
             start = time.perf_counter()
-            for _ in range(50):
-                asyncio.run(engine.process_voice_input(path))
-            cache_time = (time.perf_counter() - start) / 50
+            for _ in range(hits):
+                await engine.process_voice_input(path)
+            elapsed = time.perf_counter() - start
 
-            # Cache hits should be very fast
-            assert cache_time < 0.01, f"Cache hit avg latency: {cache_time:.4f}s"
+            assert [stage.call_count for stage in stages] == ran_once, "a hit re-ran a stage"
+            return elapsed / hits
+
+        try:
+            cache_time = asyncio.run(prime_then_hit(50))
+            assert cache_time < 0.1, f"Cache hit avg latency: {cache_time:.4f}s"
         finally:
             Path(path).unlink()
 
 
 class TestGenerateResponsePerformance:
-    """Latency benchmark for LLM response generation."""
+    """Cost of LLM response generation."""
 
     def test_generate_response_latency(self) -> None:
         engine = create_mocked_engine()
         _setup_fast_pipeline(engine)
 
+        iterations = 50
         avg_time = _measure_async(
             lambda: engine.generate_response("<iml/>", tone="calm"),
-            iterations=50,
+            iterations=iterations,
         )
-        assert avg_time < 0.05, f"generate_response avg latency: {avg_time:.4f}s"
+        assert engine._llm.interpret.await_count == iterations + 1
+        assert avg_time < 0.25, f"generate_response avg latency: {avg_time:.4f}s"
 
 
 class TestSynthesizeSpeechPerformance:
-    """Latency benchmark for TTS synthesis."""
+    """Cost of TTS synthesis."""
 
     def test_synthesize_speech_latency(self) -> None:
         engine = create_mocked_engine()
         _setup_fast_pipeline(engine)
 
+        iterations = 50
         avg_time = _measure_async(
             lambda: engine.synthesize_speech("Hello", emotion="joyful"),
-            iterations=50,
+            iterations=iterations,
         )
-        assert avg_time < 0.05, f"synthesize_speech avg latency: {avg_time:.4f}s"
+        assert engine._tts.synthesize.await_count == iterations + 1
+        assert avg_time < 0.25, f"synthesize_speech avg latency: {avg_time:.4f}s"
 
 
 class TestEvaluateIntentPerformance:
-    """Latency benchmark for constitutional filter evaluation."""
+    """Cost of constitutional filter evaluation."""
 
     def test_evaluate_intent_no_filter(self) -> None:
         """Without filter, evaluate_intent is a simple Decision return."""
@@ -172,7 +202,8 @@ class TestEvaluateIntentPerformance:
             lambda: engine.evaluate_intent("action", features),
             iterations=100,
         )
-        assert avg_time < 0.001, f"evaluate_intent (no filter) avg: {avg_time:.6f}s"
+        assert engine.evaluate_intent("action", features).allow
+        assert avg_time < 0.05, f"evaluate_intent (no filter) avg: {avg_time:.6f}s"
 
     def test_evaluate_intent_with_filter(self) -> None:
         """With filter rules, evaluation should still be fast."""
@@ -195,42 +226,7 @@ class TestEvaluateIntentPerformance:
             lambda: engine.evaluate_intent("action_5", features, emotion="neutral"),
             iterations=100,
         )
-        assert avg_time < 0.01, f"evaluate_intent (10 rules) avg: {avg_time:.6f}s"
-
-
-# ---------------------------------------------------------------------------
-# Feature label derivation performance
-# ---------------------------------------------------------------------------
-
-
-class TestDeriveFeatureLabelsPerformance:
-    """Feature label derivation should be O(n) in span count."""
-
-    def test_single_span_fast(self) -> None:
-        features = [make_span_features()]
-        avg_time = _measure_sync(
-            lambda: IntentEngine._derive_feature_labels(features),
-            iterations=1000,
-        )
-        assert avg_time < 0.001, f"_derive_feature_labels (1 span) avg: {avg_time:.6f}s"
-
-    def test_many_spans_still_fast(self) -> None:
-        features = [
-            SpanFeatures(
-                start_ms=i * 100,
-                end_ms=(i + 1) * 100,
-                text=f"word_{i}",
-                f0_mean=150.0 + (i % 50),
-                intensity_mean=60.0 + (i % 20),
-                speech_rate=4.0 + (i % 3),
-            )
-            for i in range(100)
-        ]
-        avg_time = _measure_sync(
-            lambda: IntentEngine._derive_feature_labels(features),
-            iterations=100,
-        )
-        assert avg_time < 0.01, f"_derive_feature_labels (100 spans) avg: {avg_time:.6f}s"
+        assert avg_time < 0.05, f"evaluate_intent (10 rules) avg: {avg_time:.6f}s"
 
 
 # ---------------------------------------------------------------------------
@@ -239,40 +235,38 @@ class TestDeriveFeatureLabelsPerformance:
 
 
 class TestProfilePerformance:
-    """Profile application overhead should be minimal."""
+    """Switching the active profile should be cheap."""
 
-    def test_profile_apply_fast(self) -> None:
+    def test_set_profile_fast(self) -> None:
         engine = create_mocked_engine()
         profile = ProsodyProfile(
-            profile_version="1.0",
+            profile_version="1.0.0",
             user_id="perf-test",
             description="Performance test profile",
-            mappings=[
+            mappings=(
                 ProsodyMapping(
-                    pattern={"f0_mean": "high"},
+                    pattern={"pitch": "high"},
                     interpretation_emotion="joyful",
                     confidence_boost=0.2,
                 ),
                 ProsodyMapping(
-                    pattern={"speech_rate": "slow"},
+                    pattern={"rate": "slow"},
                     interpretation_emotion="calm",
                     confidence_boost=0.1,
                 ),
                 ProsodyMapping(
-                    pattern={"intensity_mean": "loud"},
+                    pattern={"volume": "loud"},
                     interpretation_emotion="angry",
                     confidence_boost=0.15,
                 ),
-            ],
+            ),
         )
-
-        labels = {"f0_mean": "high", "intensity_mean": "normal", "speech_rate": "normal"}
 
         avg_time = _measure_sync(
-            lambda: engine._profile_applier.apply(profile, labels, "neutral", 0.5),
-            iterations=1000,
+            lambda: engine.set_profile(profile),
+            iterations=200,
         )
-        assert avg_time < 0.001, f"profile apply avg: {avg_time:.6f}s"
+        assert avg_time < 0.05, f"set_profile avg: {avg_time:.6f}s"
 
 
 # ---------------------------------------------------------------------------
@@ -281,10 +275,10 @@ class TestProfilePerformance:
 
 
 class TestThroughput:
-    """Measure how many operations per second the pipeline can handle."""
+    """Many calls in a row: every one completes, at a rate no sane build misses."""
 
     def test_generate_response_throughput(self) -> None:
-        """At least 100 generate_response calls/sec with mocks."""
+        """Every call reaches the LLM once; at least 10 calls/sec with mocks."""
         engine = create_mocked_engine()
         _setup_fast_pipeline(engine)
 
@@ -294,19 +288,21 @@ class TestThroughput:
             asyncio.run(engine.generate_response("<iml/>"))
         elapsed = time.perf_counter() - start
 
+        assert engine._llm.interpret.await_count == count
         throughput = count / elapsed
-        assert throughput > 100, f"generate_response throughput: {throughput:.0f} ops/sec"
+        assert throughput > 10, f"generate_response throughput: {throughput:.0f} ops/sec"
 
     def test_evaluate_intent_throughput(self) -> None:
-        """At least 1000 evaluate_intent calls/sec."""
+        """Every call is answered; at least 100 calls/sec."""
         engine = create_mocked_engine()
         features = [make_span_features()]
 
         count = 1000
         start = time.perf_counter()
-        for _ in range(count):
-            engine.evaluate_intent("action", features)
+        decisions = [engine.evaluate_intent("action", features) for _ in range(count)]
         elapsed = time.perf_counter() - start
 
+        assert len(decisions) == count
+        assert all(decision.allow for decision in decisions)
         throughput = count / elapsed
-        assert throughput > 1000, f"evaluate_intent throughput: {throughput:.0f} ops/sec"
+        assert throughput > 100, f"evaluate_intent throughput: {throughput:.0f} ops/sec"

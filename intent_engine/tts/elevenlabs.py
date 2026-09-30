@@ -10,17 +10,22 @@ Requires an ``ELEVENLABS_API_KEY`` environment variable or explicit
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
 import os
+import re
 from typing import Any
 
 from intent_engine.tts.base import (
     SynthesisResult,
     TTSProvider,
+    normalize_emotion,
 )
 
 logger = logging.getLogger(__name__)
+
+# ElevenLabs names output formats "<codec>_<sample rate>[_<bitrate>]",
+# e.g. "mp3_44100_128", "pcm_16000", "ulaw_8000".
+_OUTPUT_FORMAT_RE = re.compile(r"([a-z0-9]+)_(\d+)(?:_\d+)?")
 
 # Map Prosody Protocol core emotions to ElevenLabs voice settings.
 # stability: 0.0 (more variable) - 1.0 (more stable)
@@ -43,6 +48,27 @@ ELEVENLABS_EMOTION_SETTINGS: dict[str, dict[str, float]] = {
 }
 
 
+def _parse_output_format(output_format: str) -> tuple[str, int]:
+    """Return the ``(format, sample_rate)`` an ElevenLabs output format yields.
+
+    The format is the codec name (``"mp3"``, ``"pcm"``, ``"ulaw"``,
+    ``"alaw"``, ``"opus"`` or ``"wav"``); ``pcm``, ``ulaw`` and ``alaw`` are
+    raw samples without a container.  A name that does not follow the
+    ``<codec>_<sample rate>[_<bitrate>]`` pattern is reported as its leading
+    part at 44100 Hz, ElevenLabs' default rate, after a warning.
+    """
+    match = _OUTPUT_FORMAT_RE.fullmatch(output_format)
+    if match is None:
+        codec = output_format.split("_")[0] or "mp3"
+        logger.warning(
+            "Cannot read a sample rate from output_format %r; reporting %s at 44100 Hz",
+            output_format,
+            codec,
+        )
+        return codec, 44100
+    return match[1], int(match[2])
+
+
 class ElevenLabsTTS(TTSProvider):
     """ElevenLabs API-based text-to-speech provider.
 
@@ -57,7 +83,10 @@ class ElevenLabsTTS(TTSProvider):
     model_id:
         ElevenLabs model to use.  Defaults to ``"eleven_monolingual_v1"``.
     output_format:
-        Audio output format.  Defaults to ``"mp3_44100_128"``.
+        Audio output format, named ``<codec>_<sample rate>[_<bitrate>]``.
+        Defaults to ``"mp3_44100_128"``.  The result reports the codec as
+        its ``format`` (``pcm``, ``ulaw`` and ``alaw`` are raw samples) and
+        the sample rate from the name.
     """
 
     def __init__(
@@ -76,6 +105,7 @@ class ElevenLabsTTS(TTSProvider):
         self._voice_id = voice_id
         self._model_id = model_id
         self._output_format = output_format
+        self._audio_format, self._sample_rate = _parse_output_format(output_format)
         self._client: Any = None
 
     async def synthesize(
@@ -105,46 +135,40 @@ class ElevenLabsTTS(TTSProvider):
                 ) from exc
             self._client = ElevenLabsClient(api_key=self._api_key)
 
-        settings = ELEVENLABS_EMOTION_SETTINGS.get(
-            emotion, ELEVENLABS_EMOTION_SETTINGS["neutral"]
-        )
+        settings = ELEVENLABS_EMOTION_SETTINGS[normalize_emotion(emotion)]
+        client = self._client
 
-        # Run the synchronous ElevenLabs client in a thread executor
-        # to avoid blocking the event loop.
-        loop = asyncio.get_running_loop()
-        audio_iterator = await loop.run_in_executor(
-            None,
-            functools.partial(
-                self._client.text_to_speech.convert,
-                voice_id=self._voice_id,
-                text=text,
-                model_id=self._model_id,
-                output_format=self._output_format,
-                voice_settings={
-                    "stability": settings["stability"],
-                    "similarity_boost": settings["similarity_boost"],
-                    "style": settings["style"],
-                    "use_speaker_boost": True,
-                },
-            ),
-        )
+        def convert() -> bytes:
+            # The SDK's convert() is a generator: the HTTP request only happens
+            # while the chunks are consumed, so consume them here, in the worker
+            # thread, rather than on the event loop.
+            return b"".join(
+                client.text_to_speech.convert(
+                    voice_id=self._voice_id,
+                    text=text,
+                    model_id=self._model_id,
+                    output_format=self._output_format,
+                    voice_settings={
+                        "stability": settings["stability"],
+                        "similarity_boost": settings["similarity_boost"],
+                        "style": settings["style"],
+                        "use_speaker_boost": True,
+                    },
+                )
+            )
 
-        # Collect streamed audio chunks into a single bytes object
-        audio_bytes = b"".join(audio_iterator)
+        audio_bytes = await asyncio.to_thread(convert)
 
-        audio_format = "mp3" if "mp3" in self._output_format else "wav"
-        sample_rate = 44100 if "44100" in self._output_format else 22050
-
+        # The emotion is not logged above DEBUG level: emotional data is sensitive.
         logger.info(
-            "ElevenLabs synthesized %d bytes (voice=%s, emotion=%s, format=%s)",
+            "ElevenLabs synthesized %d bytes (voice=%s, format=%s)",
             len(audio_bytes),
             self._voice_id,
-            emotion,
-            audio_format,
+            self._audio_format,
         )
 
         return SynthesisResult(
             audio_data=audio_bytes,
-            format=audio_format,
-            sample_rate=sample_rate,
+            format=self._audio_format,
+            sample_rate=self._sample_rate,
         )

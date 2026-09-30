@@ -1,18 +1,22 @@
 """Whisper STT adapter.
 
-Uses OpenAI's Whisper model (via the ``openai-whisper`` or
-``faster-whisper`` package) to transcribe audio locally.
+Uses OpenAI's Whisper model (via the ``openai-whisper`` package) to
+transcribe audio locally.
 No API key required -- the model runs on the local machine.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
-from prosody_protocol import WordAlignment
+from prosody_protocol import ConversionError, WordAlignment
+from prosody_protocol.alignment import from_whisper
 
+from intent_engine.errors import STTError
 from intent_engine.stt.base import STTProvider, TranscriptionResult
 
 logger = logging.getLogger(__name__)
@@ -32,6 +36,14 @@ class WhisperSTT(STTProvider):
     language:
         Optional language code (e.g., ``"en"``).  If ``None``, Whisper
         auto-detects the language.
+
+    Notes
+    -----
+    Loading the model and decoding run in a worker thread, one call at a
+    time per instance.  A thread cannot be interrupted: cancelling a call
+    stops the wait, but the decode finishes, its result is discarded and
+    calls queued behind it still run in turn.  Bound the calls in flight if
+    you apply timeouts.
     """
 
     def __init__(
@@ -45,6 +57,9 @@ class WhisperSTT(STTProvider):
         self._device = device
         self._language = language
         self._model: Any = None
+        # Loading the model is slow and overlapping decodes on one model are not
+        # safe, so worker threads take turns.
+        self._lock = threading.Lock()
 
     def _load_model(self) -> Any:
         """Lazily load the Whisper model on first use."""
@@ -60,6 +75,21 @@ class WhisperSTT(STTProvider):
             self._model = whisper.load_model(self._model_size, device=self._device)
         return self._model
 
+    def _transcribe_blocking(self, audio_path: str) -> dict[str, Any]:
+        """Load the model if needed and run Whisper (blocking, CPU/GPU bound)."""
+        with self._lock:
+            model = self._load_model()
+
+            import whisper
+
+            result: dict[str, Any] = whisper.transcribe(
+                model,
+                audio_path,
+                language=self._language,
+                word_timestamps=True,
+            )
+            return result
+
     async def transcribe(self, audio_path: str) -> TranscriptionResult:
         """Transcribe audio using the local Whisper model.
 
@@ -72,36 +102,35 @@ class WhisperSTT(STTProvider):
         -------
         TranscriptionResult
             Transcription with word-level ``WordAlignment`` timestamps.
+
+        Raises
+        ------
+        ImportError
+            If ``openai-whisper`` is not installed.
+        FileNotFoundError
+            If *audio_path* does not exist.
+        STTError
+            If Whisper fails or its word timestamps are unusable.
         """
         path = Path(audio_path)
         if not path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        model = self._load_model()
-
-        import whisper
-
-        result = whisper.transcribe(
-            model,
-            str(path),
-            language=self._language,
-            word_timestamps=True,
-        )
+        # Model loading and decoding take seconds to minutes; keep them off the event loop.
+        try:
+            result = await asyncio.to_thread(self._transcribe_blocking, str(path))
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise STTError(f"Whisper transcription failed: {type(exc).__name__}: {exc}") from exc
 
         text: str = result.get("text", "").strip()
         detected_language: str | None = result.get("language")
 
-        alignments: list[WordAlignment] = []
-        for segment in result.get("segments", []):
-            for word_info in segment.get("words", []):
-                word_text: str = word_info.get("word", "").strip()
-                if not word_text:
-                    continue
-                start_ms = int(word_info.get("start", 0) * 1000)
-                end_ms = int(word_info.get("end", 0) * 1000)
-                alignments.append(
-                    WordAlignment(word=word_text, start_ms=start_ms, end_ms=end_ms)
-                )
+        try:
+            alignments: list[WordAlignment] = from_whisper(result)
+        except ConversionError as exc:
+            raise STTError(f"Whisper returned unusable word timings: {exc}") from exc
 
         logger.info(
             "Whisper transcribed %d words from %s (language=%s)",

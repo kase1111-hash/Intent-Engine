@@ -1,3 +1,14 @@
+> **Status: a dated snapshot, not a current assessment.** This evaluation was written on 2026-02-09 for commit 6684a96, before the refocus in commit 54c12c9 and before the fixes that followed. Everything in it (file names, line numbers, counts, and every present-tense statement about the code) describes that commit, was not re-derived for this note, and in places no longer holds. It is kept for its reasoning and its recommendations. It was annotated on 2026-09-29 (see "Since this snapshot" below). The market comparisons in the Concept section are the evaluator's opinion at the time and were not re-checked.
+>
+> **Since this snapshot** (checked against the code on 2026-09-29):
+>
+> - `CloudEngine` (`cloud_engine.py`), the `intent_engine/training/` package and the `intent_engine/integrations/` package were removed in commit 54c12c9. The four platform integrations live on as examples in `examples/integrations/` (`twilio_voice.py`, `slack_bot.py`, `discord_bot.py`, `rest_server.py`). `HybridEngine` and `LocalEngine` remain.
+> - `engine.py` has been rewritten (905 lines now), so its line references below no longer match. The `*_sync` wrappers no longer call `asyncio.run()` on every call: they share one background event loop per engine and raise `RuntimeError` when called from a running event loop. Audio is now hashed in chunks in a worker thread, and results are cached per audio content and active profile, with `clear_cache()`.
+> - The constitutional filter no longer has the four-branch decision tree described below. It evaluates every matching rule and the most restrictive decision wins, it fails closed (an unknown emotion fails a required emotion list; a required measurement that is missing fails), triggers match whole word sequences, and the rules schema is strict.
+> - `PROMPT_VERSION` in `llm/prompts.py` is now `"1.1.0"`, and a test validates every IML example in the prompt with `IMLValidator`.
+> - "Nothing with real audio" is only partly true now. With a dev-only install 1573 tests pass (1776 with the provider SDKs installed), against the 618 the snapshot reports. Several test modules run the real `ProsodyAnalyzer`, `IMLAssembler` and `IMLValidator` on synthetic, generated audio (only the STT provider is faked), and some adapters are tested against the real SDKs. There are still no recordings of natural speech and no measured accuracy: the recommended next step at the end of this document has not been done. Note that the built-in classifier only labels `neutral`, `calm`, `sad`, `angry`, `joyful` and `fearful`, so `Result.emotion` is never `sarcastic` or `frustrated` unless a prosody profile maps to it: the sarcastic and frustrated clips that next step suggests, and a filter demo built on a sarcastic emotion, need another source of that label.
+> - `Result.emotion` is now the emotion in the assembled IML. Prosody Protocol 0.1.0a3 (the version used now; it is not on PyPI) abstains when it cannot tell, so `("neutral", 0.0)` means no emotion was reported, and a single sentence carries none without calibration speech. Its changelog says its audio analysis was "checked on synthetic espeak-ng speech".
+
 ## PROJECT EVALUATION REPORT
 
 **Primary Classification:** Underdeveloped
@@ -9,7 +20,7 @@
 
 **What real problem does this solve?**
 
-Voice AI systems discard prosodic information (pitch, rhythm, emphasis, emotion) during speech-to-text, losing 60-80% of communicative intent. A customer saying "Oh great, another meeting" with sarcastic intonation gets the same flat transcript as genuine enthusiasm. Intent Engine proposes to carry structured prosodic metadata through the entire pipeline -- STT to LLM reasoning to TTS output -- using IML (Intent Markup Language) as the transport format.
+Voice AI systems discard prosodic information (pitch, rhythm, emphasis, emotion) during speech-to-text, losing much of the communicative intent (the upstream Prosody Protocol spec puts it at 60-80%, a figure it does not source and this repository has not measured). A customer saying "Oh great, another meeting" with sarcastic intonation gets the same flat transcript as genuine enthusiasm. Intent Engine proposes to carry structured prosodic metadata through the entire pipeline -- STT to LLM reasoning to TTS output -- using IML (Intent Markup Language) as the transport format.
 
 **Who is the user? Is the pain real or optional?**
 

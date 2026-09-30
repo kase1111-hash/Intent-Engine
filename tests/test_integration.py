@@ -22,8 +22,11 @@ from intent_engine.constitutional.filter import ConstitutionalFilter
 from intent_engine.constitutional.rules import ConstitutionalRule, ProsodyCondition
 from intent_engine.models.audio import Audio
 from intent_engine.models.response import Response
+from intent_engine.stt.base import TranscriptionResult
 from tests.conftest import (
+    assert_valid_iml,
     create_mocked_engine,
+    make_flat_speech,
     make_iml_document,
     make_interpretation_result,
     make_span_features,
@@ -43,11 +46,10 @@ class TestSTTProsodyIntegration:
         engine._analyzer.analyze = MagicMock(return_value=[make_span_features()])
         engine._analyzer.detect_pauses = MagicMock(return_value=[])
 
-        iml_doc = make_iml_document()
+        iml_doc = make_iml_document(emotion="angry", confidence=0.8)
         engine._assembler.assemble = MagicMock(return_value=iml_doc)
         engine._parser.to_iml_string = MagicMock(return_value="<iml/>")
         engine._validator.validate = MagicMock(return_value=ValidationResult(valid=True))
-        engine._emotion_classifier.classify = MagicMock(return_value=("frustrated", 0.8))
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(b"RIFF fake")
@@ -58,7 +60,7 @@ class TestSTTProsodyIntegration:
                 engine.process_voice_input(path)
             )
             assert result.text == "I'm really upset"
-            assert result.emotion == "frustrated"
+            assert result.emotion == "angry"
             assert result.confidence == 0.8
             engine._assembler.assemble.assert_called_once()
         finally:
@@ -77,7 +79,6 @@ class TestSTTProsodyIntegration:
         engine._assembler.assemble = MagicMock(return_value=iml_doc)
         engine._parser.to_iml_string = MagicMock(return_value="<iml/>")
         engine._validator.validate = MagicMock(return_value=ValidationResult(valid=True))
-        engine._emotion_classifier.classify = MagicMock(return_value=("neutral", 0.5))
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(b"RIFF fake")
@@ -184,30 +185,48 @@ class TestConstitutionalFilterIntegration:
 class TestProfileIntegration:
     """Profile system integrates with engine pipeline."""
 
-    def test_profile_modifies_emotion(self) -> None:
+    def test_most_specific_mapping_decides_emotion(self) -> None:
         engine = create_mocked_engine()
+        alignments, features = make_flat_speech()
+        engine._stt.transcribe = AsyncMock(
+            return_value=TranscriptionResult(
+                text="I am fine thank you today.", alignments=alignments, language="en"
+            )
+        )
+        engine._analyzer.analyze = MagicMock(return_value=features)
+        engine._analyzer.detect_pauses = MagicMock(return_value=[])
 
-        profile = ProsodyProfile(
-            profile_version="1.0",
-            user_id="test",
-            description=None,
-            mappings=[
-                ProsodyMapping(
-                    pattern={"f0_mean": "high"},
-                    interpretation_emotion="joyful",
-                    confidence_boost=0.3,
+        engine.set_profile(
+            ProsodyProfile(
+                profile_version="1.0.0",
+                user_id="test",
+                description=None,
+                mappings=(
+                    ProsodyMapping(
+                        pattern={"pitch_contour": "flat"},
+                        interpretation_emotion="calm",
+                        confidence_boost=0.6,
+                    ),
+                    ProsodyMapping(
+                        pattern={"pitch_contour": "flat", "rate": "normal"},
+                        interpretation_emotion="sincere",
+                        confidence_boost=0.7,
+                    ),
                 ),
-            ],
+            )
         )
-        engine.set_profile(profile)
 
-        features = [make_span_features(f0_mean=250.0)]
-        labels = engine._derive_feature_labels(features)
-        emotion, confidence = engine._profile_applier.apply(
-            profile, labels, "neutral", 0.5
-        )
-        assert emotion == "joyful"
-        assert confidence > 0.5
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            f.write(b"RIFF fake")
+            path = f.name
+
+        try:
+            result = asyncio.run(engine.process_voice_input(path))
+        finally:
+            Path(path).unlink()
+
+        assert (result.emotion, result.confidence) == ("sincere", 0.7)
+        assert_valid_iml(result.iml)
 
 
 class TestCacheIntegration:
@@ -224,7 +243,6 @@ class TestCacheIntegration:
         engine._assembler.assemble = MagicMock(return_value=make_iml_document())
         engine._parser.to_iml_string = MagicMock(return_value="<iml/>")
         engine._validator.validate = MagicMock(return_value=ValidationResult(valid=True))
-        engine._emotion_classifier.classify = MagicMock(return_value=("neutral", 0.5))
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(b"RIFF fake")

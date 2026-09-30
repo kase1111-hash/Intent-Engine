@@ -19,6 +19,28 @@ class TestResponseConstruction:
             assert resp.emotion == emotion
 
 
+class TestResponseIntent:
+    def test_intent_defaults_to_none(self) -> None:
+        resp = Response(text="hello", emotion="calm")
+        assert resp.intent is None
+
+    def test_intent_is_the_trailing_field(self) -> None:
+        assert [f.name for f in dataclasses.fields(Response)] == ["text", "emotion", "intent"]
+
+    def test_positional_construction_is_unchanged(self) -> None:
+        resp = Response("hello", "calm")
+        assert (resp.text, resp.emotion, resp.intent) == ("hello", "calm", None)
+
+    def test_with_intent(self) -> None:
+        resp = Response(text="Are you sure?", emotion="calm", intent="delete_files")
+        assert resp.intent == "delete_files"
+
+    def test_intent_takes_part_in_equality(self) -> None:
+        a = Response(text="hello", emotion="calm", intent="greet")
+        b = Response(text="hello", emotion="calm", intent="cancel")
+        assert a != b
+
+
 class TestResponseImmutability:
     def test_frozen(self) -> None:
         resp = Response(text="test", emotion="neutral")

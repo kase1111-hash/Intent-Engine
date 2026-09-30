@@ -13,6 +13,7 @@ Usage::
         intent="delete_account",
         prosody_features=features,
         emotion="frustrated",
+        emotion_confidence=0.7,  # below 0.5 the emotion counts as unknown
     )
 """
 

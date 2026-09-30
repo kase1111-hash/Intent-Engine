@@ -48,9 +48,13 @@ def _make_features(
     )
 
 
-def _make_iml_doc() -> IMLDocument:
+def _make_iml_doc(
+    emotion: str | None = None, confidence: float | None = None
+) -> IMLDocument:
     return IMLDocument(
-        utterances=(Utterance(children=(Segment(),)),),
+        utterances=(
+            Utterance(children=(Segment(),), emotion=emotion, confidence=confidence),
+        ),
         version="0.1.0",
     )
 
@@ -134,7 +138,8 @@ class TestProcessVoiceInput:
         engine._analyzer.analyze = MagicMock(return_value=features)
         engine._analyzer.detect_pauses = MagicMock(return_value=[])
 
-        iml_doc = _make_iml_doc()
+        # Result reports the emotion the assembler put in the document
+        iml_doc = _make_iml_doc(emotion="joyful", confidence=0.85)
         engine._assembler.assemble = MagicMock(return_value=iml_doc)
 
         iml_string = '<iml><utterance>Hello world</utterance></iml>'
@@ -142,10 +147,6 @@ class TestProcessVoiceInput:
 
         engine._validator.validate = MagicMock(
             return_value=ValidationResult(valid=True)
-        )
-
-        engine._emotion_classifier.classify = MagicMock(
-            return_value=("joyful", 0.85)
         )
 
         # Write a temp audio file for hashing
@@ -185,9 +186,6 @@ class TestProcessVoiceInput:
         engine._parser.to_iml_string = MagicMock(return_value="<iml/>")
         engine._validator.validate = MagicMock(
             return_value=ValidationResult(valid=True)
-        )
-        engine._emotion_classifier.classify = MagicMock(
-            return_value=("neutral", 0.0)
         )
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -231,13 +229,12 @@ class TestProcessVoiceInput:
         engine = _create_engine(stt_mock=stt_mock)
         engine._analyzer.analyze = MagicMock(return_value=[])
         engine._analyzer.detect_pauses = MagicMock(return_value=[])
-        engine._assembler.assemble = MagicMock(return_value=_make_iml_doc())
+        engine._assembler.assemble = MagicMock(
+            return_value=_make_iml_doc(emotion="sad", confidence=0.3)  # low confidence
+        )
         engine._parser.to_iml_string = MagicMock(return_value="<iml/>")
         engine._validator.validate = MagicMock(
             return_value=ValidationResult(valid=True)
-        )
-        engine._emotion_classifier.classify = MagicMock(
-            return_value=("sarcastic", 0.3)  # low confidence
         )
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -248,7 +245,7 @@ class TestProcessVoiceInput:
             result = asyncio.run(
                 engine.process_voice_input(audio_path)
             )
-            assert result.emotion == "sarcastic"
+            assert result.emotion == "sad"
             assert result.suggested_tone == "neutral"  # low confidence
         finally:
             Path(audio_path).unlink()
@@ -258,7 +255,9 @@ class TestCaching:
     def test_cache_hit(self) -> None:
         stt_mock = MagicMock()
         stt_mock.transcribe = AsyncMock(
-            return_value=TranscriptionResult(text="Hi", alignments=[], language="en")
+            return_value=TranscriptionResult(
+                text="Hi", alignments=[_make_alignment("Hi", 0, 300)], language="en"
+            )
         )
 
         engine = _create_engine(stt_mock=stt_mock)
@@ -268,9 +267,6 @@ class TestCaching:
         engine._parser.to_iml_string = MagicMock(return_value="<iml/>")
         engine._validator.validate = MagicMock(
             return_value=ValidationResult(valid=True)
-        )
-        engine._emotion_classifier.classify = MagicMock(
-            return_value=("neutral", 0.5)
         )
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -287,7 +283,8 @@ class TestCaching:
                 engine.process_voice_input(audio_path)
             )
 
-            assert result1 is result2
+            # Equal, but not shared: hits return a copy of the cached result
+            assert result1 == result2
             # STT should only be called once
             assert stt_mock.transcribe.call_count == 1
         finally:
@@ -306,9 +303,6 @@ class TestCaching:
         engine._parser.to_iml_string = MagicMock(return_value="<iml/>")
         engine._validator.validate = MagicMock(
             return_value=ValidationResult(valid=True)
-        )
-        engine._emotion_classifier.classify = MagicMock(
-            return_value=("neutral", 0.5)
         )
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -369,6 +363,54 @@ class TestGenerateResponse:
         assert result.text == "Hello! How can I help?"
         assert result.emotion == "joyful"
 
+    def test_carries_the_intent_the_llm_parsed(self) -> None:
+        llm_mock = MagicMock()
+        llm_mock.interpret = AsyncMock(
+            return_value=InterpretationResult(
+                intent="delete_files",
+                response_text="Are you sure?",
+                suggested_emotion="calm",
+            )
+        )
+
+        engine = _create_engine(llm_mock=llm_mock)
+
+        result = asyncio.run(
+            engine.generate_response("<utterance>Delete everything</utterance>")
+        )
+
+        assert result.intent == "delete_files"
+        assert (result.text, result.emotion) == ("Are you sure?", "calm")
+
+    def test_intent_feeds_the_constitutional_filter(self) -> None:
+        # the documented flow: LLM intent -> evaluate_result(response.intent, result)
+        llm_mock = MagicMock()
+        llm_mock.interpret = AsyncMock(
+            return_value=InterpretationResult(
+                intent="delete_account",
+                response_text="Are you sure?",
+                suggested_emotion="calm",
+            )
+        )
+        rules_path = str(
+            Path(__file__).parent / "constitutional" / "sample_rules.yaml"
+        )
+        engine = _create_engine(llm_mock=llm_mock, constitutional_rules=rules_path)
+
+        response = asyncio.run(engine.generate_response("<iml/>"))
+        turn = Result(
+            text="Delete my account",
+            emotion="sarcastic",
+            confidence=0.9,
+            iml="<iml/>",
+            iml_document=_make_iml_doc("sarcastic", 0.9),
+            suggested_tone="sarcastic",
+            prosody_features=[_make_features()],
+        )
+        decision = engine.evaluate_result(response.intent, turn)
+
+        assert decision.allow is False
+
     def test_passes_context(self) -> None:
         llm_mock = MagicMock()
         llm_mock.interpret = AsyncMock(
@@ -402,6 +444,56 @@ class TestGenerateResponse:
 
         call_kwargs = llm_mock.interpret.call_args
         assert "empathetic" in call_kwargs.kwargs.get("context", "")
+
+    def test_tone_hint_describes_the_user_and_does_not_command_a_tone(self) -> None:
+        # The LLM prompt says the response emotion should match what the user
+        # needs, not what they expressed (an angry user may need calm), so the
+        # hint must report the detected tone, not order the model to adopt it.
+        llm_mock = MagicMock()
+        llm_mock.interpret = AsyncMock(
+            return_value=InterpretationResult(
+                intent="test", response_text="ok", suggested_emotion="calm"
+            )
+        )
+        engine = _create_engine(llm_mock=llm_mock)
+
+        asyncio.run(engine.generate_response("<iml/>", tone="angry"))
+
+        context = llm_mock.interpret.call_args.kwargs["context"]
+        assert "angry" in context
+        assert "Respond with" not in context
+        assert "sounds" in context
+        assert "mirror" in context  # "do not simply mirror it"
+
+    def test_tone_hint_follows_the_callers_context(self) -> None:
+        llm_mock = MagicMock()
+        llm_mock.interpret = AsyncMock(
+            return_value=InterpretationResult(
+                intent="test", response_text="ok", suggested_emotion="calm"
+            )
+        )
+        engine = _create_engine(llm_mock=llm_mock)
+
+        asyncio.run(
+            engine.generate_response("<iml/>", context="customer_support", tone="sad")
+        )
+
+        context = llm_mock.interpret.call_args.kwargs["context"]
+        assert context.startswith("customer_support\n")
+        assert "sad" in context
+
+    def test_no_tone_means_no_hint(self) -> None:
+        llm_mock = MagicMock()
+        llm_mock.interpret = AsyncMock(
+            return_value=InterpretationResult(
+                intent="test", response_text="ok", suggested_emotion="calm"
+            )
+        )
+        engine = _create_engine(llm_mock=llm_mock)
+
+        asyncio.run(engine.generate_response("<iml/>"))
+
+        assert llm_mock.interpret.call_args.kwargs["context"] is None
 
     def test_llm_failure_raises_llm_error(self) -> None:
         llm_mock = MagicMock()

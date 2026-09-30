@@ -23,7 +23,8 @@ class TranscriptionResult:
         Full transcription text.
     alignments:
         Per-word time boundaries from ``prosody_protocol.WordAlignment``.
-        Each alignment has ``word``, ``start_ms``, and ``end_ms`` fields.
+        Each alignment has ``word``, ``start_ms``, and ``end_ms`` fields,
+        and ``speaker`` when the provider labels speakers.
     language:
         Detected language code (e.g., ``"en"``), or ``None`` if unknown.
     """
@@ -41,6 +42,18 @@ class STTProvider(ABC):
     (``IntentEngine``) feeds these timestamps into
     ``prosody_protocol.ProsodyAnalyzer`` and ``prosody_protocol.IMLAssembler``
     to produce IML output.
+
+    ``transcribe`` runs on the caller's event loop, so an adapter whose SDK
+    call blocks (synchronous client, local model) must run it in a worker
+    thread, for example with ``asyncio.to_thread``.
+
+    A thread cannot be interrupted.  Cancelling ``transcribe`` (or timing it
+    out) stops the wait, but a transcription already running in a worker
+    thread finishes and its result is discarded.  An adapter that makes calls
+    take turns on one model also lets calls queued behind it run in turn, so a
+    caller that applies timeouts should bound how many calls it has in flight
+    (for example with an ``asyncio.Semaphore``).  A cancelled call never
+    changes the result of the next one.
     """
 
     @abstractmethod

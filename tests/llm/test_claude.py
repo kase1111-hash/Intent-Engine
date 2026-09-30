@@ -41,6 +41,10 @@ class TestClaudeLLMConstruction:
         llm = ClaudeLLM(api_key="key")
         assert llm._model == "claude-sonnet-4-20250514"
 
+    def test_temperature_is_optional(self) -> None:
+        llm = ClaudeLLM(api_key="key")
+        assert llm._temperature is None
+
     def test_custom_params(self) -> None:
         llm = ClaudeLLM(
             api_key="key",
@@ -81,12 +85,14 @@ class TestClaudeLLMInterpret:
         })
 
         mock_content_block = MagicMock()
+        mock_content_block.type = "text"
         mock_content_block.text = response_json
 
         mock_response = MagicMock()
         mock_response.content = [mock_content_block]
 
         mock_client = MagicMock()
+        mock_client.__aenter__.return_value = mock_client
         mock_client.messages.create = AsyncMock(return_value=mock_response)
 
         mock_anthropic.AsyncAnthropic = MagicMock(return_value=mock_client)  # type: ignore[attr-defined]
@@ -115,12 +121,14 @@ class TestClaudeLLMInterpret:
         })
 
         mock_content_block = MagicMock()
+        mock_content_block.type = "text"
         mock_content_block.text = response_json
 
         mock_response = MagicMock()
         mock_response.content = [mock_content_block]
 
         mock_client = MagicMock()
+        mock_client.__aenter__.return_value = mock_client
         mock_client.messages.create = AsyncMock(return_value=mock_response)
 
         mock_anthropic.AsyncAnthropic = MagicMock(return_value=mock_client)  # type: ignore[attr-defined]

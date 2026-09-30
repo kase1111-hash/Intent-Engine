@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from prosody_protocol import (
     IMLDocument,
     Segment,
@@ -86,14 +87,14 @@ class TestHybridEngineConstruction:
             stt_f.return_value = MagicMock()
             llm_f.return_value = MagicMock()
             tts_f.return_value = MagicMock()
-            HybridEngine(llm_model="models/llama-3.1-70b-prosody-ft.gguf")
+            HybridEngine(llm_model="models/llama-3.1-70b-prosody-ft.gguf", validate_models=False)
             call_kwargs = llm_f.call_args[1]
             assert call_kwargs.get("model_path") == "models/llama-3.1-70b-prosody-ft.gguf"
 
 
 class TestHybridEngineProperties:
     def test_llm_model_property(self) -> None:
-        engine = _create_hybrid(llm_model="my-model.gguf")
+        engine = _create_hybrid(llm_model="my-model.gguf", validate_models=False)
         assert engine.llm_model == "my-model.gguf"
 
     def test_llm_model_none(self) -> None:
@@ -128,9 +129,6 @@ class TestHybridEnginePipeline:
         engine._parser.to_iml_string = MagicMock(return_value="<iml/>")
         engine._validator.validate = MagicMock(
             return_value=ValidationResult(valid=True)
-        )
-        engine._emotion_classifier.classify = MagicMock(
-            return_value=("neutral", 0.5)
         )
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -169,3 +167,20 @@ class TestHybridEnginePipeline:
         assert engine._parser is not None
         assert engine._validator is not None
         assert engine._emotion_classifier is not None
+
+
+class TestSafetyPathOptions:
+    """The rules and profile paths are forwarded to the base engine unchanged."""
+
+    RULES = Path(__file__).parent / "constitutional" / "sample_rules.yaml"
+
+    def test_a_pathlib_rules_path_builds_the_filter(self) -> None:
+        assert _create_hybrid(constitutional_rules=self.RULES)._filter is not None
+
+    def test_an_empty_rules_path_is_an_error(self) -> None:
+        with pytest.raises(ValueError, match="constitutional_rules"):
+            _create_hybrid(constitutional_rules="")
+
+    def test_an_empty_profile_path_is_an_error(self) -> None:
+        with pytest.raises(ValueError, match="prosody_profile"):
+            _create_hybrid(prosody_profile="")

@@ -1,15 +1,19 @@
 """Coqui TTS adapter.
 
 Uses the Coqui TTS library (open-source, local) to synthesize speech.
-Emotion labels are mapped to speaker embeddings or style parameters
-depending on the model.  No API key required -- runs on the local machine.
+The emotion label only sets the ``speed`` passed to ``TTS.tts()``; whether
+that changes the voice depends on the model and library version (see
+:class:`CoquiTTS`).  No API key required -- runs on the local machine.
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
+import math
 import struct
+import threading
 import wave
 from typing import Any
 
@@ -17,9 +21,26 @@ from intent_engine.tts.base import (
     SynthesisResult,
     TTSProvider,
     get_voice_params,
+    strip_ssml,
 )
 
 logger = logging.getLogger(__name__)
+
+# Rate of most Coqui models, and the fallback when the loaded one does not report it.
+_DEFAULT_SAMPLE_RATE = 22050
+
+
+def _output_sample_rate(tts: Any) -> int:
+    """Return the rate the loaded model synthesizes at (models differ: XTTS is 24000)."""
+    rate = getattr(getattr(tts, "synthesizer", None), "output_sample_rate", None)
+    if (
+        isinstance(rate, (int, float))
+        and not isinstance(rate, bool)
+        and math.isfinite(rate)
+        and rate > 0
+    ):
+        return int(rate)
+    return _DEFAULT_SAMPLE_RATE
 
 
 class CoquiTTS(TTSProvider):
@@ -36,6 +57,25 @@ class CoquiTTS(TTSProvider):
         Speaker name for multi-speaker models, or ``None``.
     language:
         Language code for multi-language models, or ``None``.
+
+    Notes
+    -----
+    Coqui has no emotion control, so the emotion label is mapped to the
+    ``speed`` argument of ``TTS.tts()`` only.  According to the sources of
+    TTS 0.22.0 and coqui-tts 0.27.5: 0.22.0 accepts ``speed`` but discards it
+    for every model; coqui-tts forwards it to the model, where XTTS applies
+    it and other models (including the default Tacotron2) ignore it.  With
+    those, every emotion sounds the same.
+
+    Both packages are imported as ``TTS``.  TTS 0.22.0, the last release of
+    the original package, does not install on Python 3.12 or later; the
+    maintained fork ``coqui-tts`` does.
+
+    Loading and synthesis run in a worker thread, one call at a time per
+    instance.  A thread cannot be interrupted: cancelling a call stops the
+    wait, but the synthesis finishes, its audio is discarded and calls
+    queued behind it still run in turn.  Bound the calls in flight if you
+    apply timeouts.
     """
 
     def __init__(
@@ -51,6 +91,8 @@ class CoquiTTS(TTSProvider):
         self._speaker = speaker
         self._language = language
         self._tts: Any = None
+        # Coqui models are not documented as thread-safe: load and run one call at a time.
+        self._lock = threading.Lock()
 
     def _load_model(self) -> Any:
         """Lazily load the Coqui TTS model on first use."""
@@ -60,7 +102,9 @@ class CoquiTTS(TTSProvider):
             except ImportError as exc:
                 raise ImportError(
                     "TTS (Coqui) is required for CoquiTTS. "
-                    "Install it with: pip install intent-engine[coqui]"
+                    "Install it with: pip install intent-engine[coqui] "
+                    "(Python < 3.12), or pip install coqui-tts, the maintained "
+                    "fork, on newer Pythons."
                 ) from exc
             logger.info(
                 "Loading Coqui TTS model '%s' on %s",
@@ -70,6 +114,32 @@ class CoquiTTS(TTSProvider):
             self._tts = TTS(model_name=self._model_name).to(self._device)
         return self._tts
 
+    def _synthesize_blocking(self, text: str, speed: float) -> SynthesisResult:
+        """Load the model if needed and synthesize (runs in a worker thread)."""
+        with self._lock:
+            tts = self._load_model()
+
+            # Coqui TTS tts() returns a list of float samples
+            wav_samples: list[float] = tts.tts(
+                text=text,
+                speaker=self._speaker,
+                language=self._language,
+                speed=speed,
+            )
+            sample_rate = _output_sample_rate(tts)
+
+        # Convert float samples to 16-bit PCM WAV bytes
+        audio_bytes = _float_samples_to_wav(wav_samples, sample_rate)
+
+        duration = len(wav_samples) / sample_rate if len(wav_samples) else None
+
+        return SynthesisResult(
+            audio_data=audio_bytes,
+            format="wav",
+            sample_rate=sample_rate,
+            duration=duration,
+        )
+
     async def synthesize(
         self, text: str, emotion: str = "neutral", **kwargs: object
     ) -> SynthesisResult:
@@ -78,47 +148,35 @@ class CoquiTTS(TTSProvider):
         Parameters
         ----------
         text:
-            Text to synthesize.
+            Text to synthesize.  An SSML document is reduced to its plain
+            text first.
         emotion:
             Emotion label used to adjust synthesis parameters
-            (speed via voice params).
+            (speed via voice params; see the class notes for its limits).
 
         Returns
         -------
         SynthesisResult
-            Synthesized audio bytes in WAV format.
+            Synthesized audio bytes in WAV format, at the sample rate of
+            the loaded model.
         """
-        tts = self._load_model()
         voice_params = get_voice_params(emotion)
 
-        # Coqui TTS tts() returns a list of float samples
-        wav_samples: list[float] = tts.tts(
-            text=text,
-            speaker=self._speaker,
-            language=self._language,
-            speed=voice_params.rate,
+        # Model loading and inference are CPU/GPU-bound and blocking, so keep
+        # them off the event loop.
+        result = await asyncio.to_thread(
+            self._synthesize_blocking, strip_ssml(text), voice_params.rate
         )
 
-        # Convert float samples to 16-bit PCM WAV bytes
-        sample_rate = 22050
-        audio_bytes = _float_samples_to_wav(wav_samples, sample_rate)
-
-        duration = len(wav_samples) / sample_rate if wav_samples else None
-
+        # The emotion is not logged above DEBUG level: emotional data is sensitive.
         logger.info(
-            "Coqui TTS synthesized %d bytes (model=%s, emotion=%s, duration=%.2fs)",
-            len(audio_bytes),
+            "Coqui TTS synthesized %d bytes (model=%s, duration=%.2fs)",
+            len(result.audio_data),
             self._model_name,
-            emotion,
-            duration or 0.0,
+            result.duration or 0.0,
         )
 
-        return SynthesisResult(
-            audio_data=audio_bytes,
-            format="wav",
-            sample_rate=sample_rate,
-            duration=duration,
-        )
+        return result
 
 
 def _float_samples_to_wav(samples: list[float], sample_rate: int) -> bytes:
