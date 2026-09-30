@@ -100,7 +100,10 @@ class TestTypeToSpeech:
             )
         )
 
-        result = engine.type_to_speech_sync("Hello")
+        try:
+            result = engine.type_to_speech_sync("Hello")
+        finally:
+            engine.close()  # stop the loop thread the sync wrapper started
         assert isinstance(result, Audio)
 
 

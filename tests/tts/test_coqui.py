@@ -260,9 +260,9 @@ class TestCoquiEventLoop:
         assert heartbeat.ticks >= 5
 
     async def test_event_loop_stays_responsive_while_the_model_loads(
-        self, coqui_package: type[StubModel]
+        self, coqui_package: type[StubModel], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        coqui_package.load_delay = 0.3
+        monkeypatch.setattr(coqui_package, "load_delay", 0.3)  # restored after the test
         tts = CoquiTTS(model_name="some/model", device="cpu")
 
         async with Heartbeat() as heartbeat:

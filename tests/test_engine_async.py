@@ -316,18 +316,31 @@ class TestLifecycle:
     def test_a_forked_child_gets_its_own_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import os
 
+        real_pid = os.getpid()
+
+        class ForkedOS:
+            """``os`` as the engine module sees it in a forked child."""
+
+            getpid = staticmethod(lambda: real_pid + 1)
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(os, name)
+
         engine = _engine()
         engine.generate_response_sync("<iml/>")
         parents = engine._sync_runner
+        assert parents is not None
+        try:
+            monkeypatch.setattr("intent_engine.engine.os", ForkedOS())
+            engine.generate_response_sync("<iml/>")  # would hang on the parent's loop
 
-        real_pid = os.getpid()
-        monkeypatch.setattr("intent_engine.engine.os.getpid", lambda: real_pid + 1)
-        engine.generate_response_sync("<iml/>")  # would hang on the parent's loop
-
-        assert engine._sync_runner is not parents
-        monkeypatch.undo()
-        engine.close()
-        parents.close()  # the "parent" thread is really ours; stop it too
+            assert engine._sync_runner is not parents
+            # Stop the child's runner while its pid still matches the patched one;
+            # after the patch is gone it would look like another process's thread
+            engine.close()
+        finally:
+            monkeypatch.undo()
+            parents.close()  # the "parent" thread is really ours; stop it too
 
 
 class TestBlockingWorkLeavesTheLoop:

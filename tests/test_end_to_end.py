@@ -322,5 +322,8 @@ class TestFullPipelineErrorRecovery:
             side_effect=RuntimeError("TTS down")
         )
 
-        with pytest.raises(TTSError):
-            engine.synthesize_speech_sync("Hello")
+        try:
+            with pytest.raises(TTSError):
+                engine.synthesize_speech_sync("Hello")
+        finally:
+            engine.close()  # stop the loop thread the sync wrapper started
