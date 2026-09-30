@@ -260,8 +260,8 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-- The `*_sync` wrappers share one background event loop per engine and raise `RuntimeError` when called from a running event loop (async code, Jupyter): `await` the coroutine there. `engine.close()` stops the background loop early; it also stops when the engine is garbage collected.
-- `process_voice_input` takes the path of a local audio file (`audio_path`), not a URL. Results are cached in memory (LRU, keyed by the audio's content and the active prosody profile); pass `use_cache=False` to skip the cache, `cache_size=0` to the engine to disable it, and call `engine.clear_cache()` to drop what it holds (transcripts and emotion).
+- The `*_sync` wrappers share one background event loop per engine and raise `RuntimeError` when called from a running event loop (async code, Jupyter): `await` the coroutine there. `engine.close()` stops the background loop early (a call still running in another thread is cancelled with `CancelledError`); it also stops when the engine is garbage collected. A provider that raises `SystemExit` or `KeyboardInterrupt` does not stop the shared loop. Hashing and prosody analysis run in a worker thread, but Praat holds the GIL, so a long recording can still pause the event loop for a fraction of its length: run the engine in a worker process if latency matters.
+- `process_voice_input` takes the path of a local audio file (`audio_path`), not a URL. Results are cached in memory (LRU, keyed by the audio's content and the active prosody profile); pass `use_cache=False` to skip the cache, `cache_size=0` to the engine to disable it, and call `engine.clear_cache()` to drop what it holds (transcripts and emotion). A call that is already running when you clear the cache still returns its result but is not cached.
 - If prosody analysis fails (audio that is unreadable, too short or sampled too low), the turn continues with text-only IML: `prosody_features` is empty and no emotion is reported. A warning is logged and the result is not cached. Prosody analysis reads WAV, AIFF, FLAC and MP3 directly; OGG/Opus, WebM, M4A and other formats need `ffmpeg` on `PATH`.
 - Failures surface as `STTError`, `LLMError` and `TTSError` (all `IntentEngineError`s).
 
@@ -329,12 +329,13 @@ What `decision` looks like for someone saying "delete all files" (`Decision` fie
 | The request was spoken as | `decision` |
 |---|---|
 | a single sentence, no profile: no emotion is reported | `allow=False`, `requires_verification=True`, `verification_method="explicit_confirmation"`, `denial_reason="Rule 'destructive_file_operations': Required emotion not met (emotion unknown)"` |
-| the last of several sentences, in a voice the classifier reads as `angry` | `allow=False`, `requires_verification=False`, `denial_reason="Rule 'destructive_file_operations': Forbidden emotion detected"` |
-| `calm` reported with confidence of at least 0.5 (by the classifier on a longer recording, a profile, or a source of your own), at 3 to 6 syllables per second, with under 4 semitones of pitch movement | `allow=True` |
+| several sentences, one of them in a voice the classifier reads as `angry` (whichever sentence it is, and even if another sentence is read as `joyful` with higher confidence) | `allow=False`, `requires_verification=False`, `denial_reason="Rule 'destructive_file_operations': Forbidden emotion detected"` |
+| `calm` reported with confidence of at least 0.5 for every sentence that has an emotion (by the classifier on a longer recording, a profile, or a source of your own), at 3 to 6 syllables per second, with under 4 semitones of pitch movement | `allow=True` |
 
 How the filter decides:
 
 - **Unknown emotion fails closed.** A missing emotion, or one whose confidence is below 0.5 (`("neutral", 0.0)` from a single sentence, for example), fails a required `emotion` list and never counts as calm. A required `pitch_variance` or `speaking_rate` that could not be measured (no prosody features) fails too. With the built-in classifier, an action guarded by a required emotion therefore asks for verification whenever no emotion was reported.
+- **Every reported emotion of the turn is weighed.** `evaluate_result` gates on the emotion of each sentence the assembler reported with confidence of at least 0.5, not only the most confident one: a forbidden emotion in any sentence denies, and every reported emotion must satisfy a required `emotion` list (a turn that is `calm` in one sentence and `sad` in another asks for verification under a `[calm]` rule). Sentences with no reported emotion are ignored; they do not count as unknown.
 - **A forbidden list only blocks a known emotion.** Pair it with a required `emotion` list, as above, so that an unknown emotion still fails.
 - **The most restrictive decision wins** when several rules match: deny, then `two_factor`, then `explicit_confirmation`, then allow, whatever the order of the rules.
 - **An intent that matches no rule is allowed, and so is every intent when the engine has no `constitutional_rules`.** The intent label is written by the LLM (a short snake_case label such as `delete_all_files`) and may differ between runs. List every phrasing you care about in `triggers` (whole words: `payment` does not match `payments`), or, for actions that must never slip through, pass the label of the action your code is about to run: `engine.evaluate_result("delete_all_files", result)`.
@@ -575,7 +576,7 @@ rules:
       method: two_factor
 ```
 
-The rule keys are `triggers` (required), `required_prosody` and `forbidden_prosody` (conditions `emotion`, `pitch_variance` and `speaking_rate`; only `emotion` can be forbidden) and `verification` (`method`: `explicit_confirmation` or `two_factor`; `retries`). Nothing else is accepted: a key such as `pause_before_amount`, or a voice quality, jitter, shimmer or intensity condition, raises `ValueError` on load instead of being ignored. Emotion labels come from Prosody Protocol's core vocabulary. The classifier only emits `calm`, `sad`, `angry`, `joyful` and `fearful`, so a rule that lists any other label (as `frustrated` and `sarcastic` above) logs a warning and only matches emotions from a [prosody profile](#prosody-profiles) or another source you supply. `neutral` in a `required_prosody` list cannot match a classifier result, because the classifier never reports `neutral` with a confidence of 0.5 or more.
+The rule keys are `triggers` (required), `required_prosody` and `forbidden_prosody` (conditions `emotion`, `pitch_variance` and `speaking_rate`; only `emotion` can be forbidden) and `verification` (`method`: `explicit_confirmation` or `two_factor`; `retries`). Nothing else is accepted: a key such as `pause_before_amount`, or a voice quality, jitter, shimmer or intensity condition, raises `ValueError` on load instead of being ignored. A `verification` block needs a `required_prosody` (it says what to do when that fails), a condition must set at least one of `emotion`, `pitch_variance` or `speaking_rate`, and a rule with neither `required_prosody` nor `forbidden_prosody` matches but never restricts (a warning is logged on load). Emotion labels come from Prosody Protocol's core vocabulary. The classifier only emits `calm`, `sad`, `angry`, `joyful` and `fearful`, so a rule that lists any other label (as `frustrated` and `sarcastic` above) logs a warning and only matches emotions from a [prosody profile](#prosody-profiles) or another source you supply. `neutral` in a `required_prosody` list cannot match a classifier result, because the classifier never reports `neutral` with a confidence of 0.5 or more.
 
 **Runtime Evaluation:**
 
@@ -600,7 +601,7 @@ else:
     print("denied:", decision.denial_reason)
 ```
 
-`engine.evaluate_result(intent, result)` does the same with the engine's own filter (`constitutional_rules=`) and is the usual way to gate an action; see [With Constitutional Governance](#with-constitutional-governance) for what the decisions mean. `evaluate` also accepts `context=`, which rules do not use yet, and `min_emotion_confidence=` (default 0.5).
+`engine.evaluate_result(intent, result)` uses the engine's own filter (`constitutional_rules=`) and is the usual way to gate an action. Unlike `evaluate`, which sees only the one emotion you pass it, it weighs the emotion of every sentence in the turn, and `evaluate_intent(..., emotion=...)` without `emotion_confidence` reads an abstention as a measured `neutral`, which a rule that lists `neutral` then accepts, so avoid it for gating; see [With Constitutional Governance](#with-constitutional-governance) for what the decisions mean. `evaluate` also accepts `context=`, which rules do not use yet, and `min_emotion_confidence=` (default 0.5).
 
 ### Prosody Profiles
 
@@ -772,7 +773,7 @@ Intent Engine makes no compliance claim. It has no consent recording, opt-out, r
 ### Emotional Data Ethics
 
 We treat emotional data as **sensitive PII**. What the code does today:
-- Emotion labels and intents are kept out of INFO-and-above logs and out of constitutional `denial_reason`s, with one exception: the TTS adapters log the emotion label they are asked to speak with
+- Emotion labels, intents and any text of an LLM reply are kept out of INFO-and-above logs, error messages and constitutional `denial_reason`s (a reply's length and, at DEBUG only, a short excerpt, are logged to help debug)
 - The emotion is optional: nothing downstream requires one, and the pipeline reports none when it cannot tell
 - The LLM prompt tells the model never to read prosody as evidence of lying or truthfulness, never to use it to judge or profile the speaker, and never to base a consequential decision on it alone
 

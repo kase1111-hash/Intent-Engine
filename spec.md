@@ -209,12 +209,12 @@ engine = IntentEngine(
 | Parameter | Default | Description |
 |---|---|---|
 | `stt_provider`, `llm_provider`, `tts_provider` | `"whisper-prosody"`, `"claude"`, `"elevenlabs"` | Provider names as above. The engine builds all three when it is created. A provider that needs an API key raises `ValueError` if the key is in neither its environment variable (`DEEPGRAM_API_KEY`, `ASSEMBLYAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`) nor the matching `*_kwargs["api_key"]` |
-| `constitutional_rules` | `None` | Path to a YAML rules file (Section 4.4). `None` means no filter: every action is allowed. An empty string is rejected with `ValueError` |
-| `prosody_profile` | `None` | Path to a prosody profile JSON (Section 11.1), validated at construction (`ProfileError`) |
-| `cache_size` | `128` | Results kept per audio content and active profile (LRU). `0` or less disables caching |
+| `constitutional_rules` | `None` | Path (`str` or `pathlib.Path`) to a YAML rules file (Section 4.4). `None` means no filter: every action is allowed. An empty or blank string is rejected with `ValueError`, any other type with `TypeError` |
+| `prosody_profile` | `None` | Path (`str` or `pathlib.Path`) to a prosody profile JSON (Section 11.1), validated at construction (`ProfileError`). An empty or blank string raises `ValueError`, any other type `TypeError` |
+| `cache_size` | `128` | Results kept per audio content and active profile (LRU); must be an integer. `0` or less disables caching |
 | `stt_kwargs`, `llm_kwargs`, `tts_kwargs` | `None` | Provider-specific keyword arguments, for example `{"model_size": "small"}`, `{"model": "gpt-4o"}` or `{"voice_id": "..."}` |
 
-**Async and sync.** `process_voice_input`, `generate_response`, `synthesize_speech` and `type_to_speech` are coroutines. Each has a `*_sync` twin (`process_voice_input_sync`, `generate_response_sync`, `synthesize_speech_sync`, `type_to_speech_sync`) for plain scripts. The twins share one background event loop per engine and raise `RuntimeError` when called from a running event loop (call the coroutine with `await` there). `close()` stops that loop early; `clear_cache()` drops cached results, which hold transcripts and emotion.
+**Async and sync.** `process_voice_input`, `generate_response`, `synthesize_speech` and `type_to_speech` are coroutines. Each has a `*_sync` twin (`process_voice_input_sync`, `generate_response_sync`, `synthesize_speech_sync`, `type_to_speech_sync`) for plain scripts. The twins share one background event loop per engine and raise `RuntimeError` when called from a running event loop (call the coroutine with `await` there). `close()` stops that loop early (a call still running in another thread is cancelled with `CancelledError`), and a provider that raises `SystemExit` or `KeyboardInterrupt` does not stop it. `clear_cache()` drops cached results, which hold transcripts and emotion; a call already running when it is called still returns its result but is not cached. Hashing and prosody analysis run in a worker thread, but Praat holds the GIL, so a long recording can still pause the event loop for a fraction of its length: run the engine in a worker process if latency matters.
 
 #### HybridEngine (Cloud STT + Local LLM)
 
@@ -244,7 +244,7 @@ engine = LocalEngine(
 )
 ```
 
-The model options go to the setting each provider takes, and impossible combinations raise `ValueError` at construction: `stt_model` is the Whisper model size (`tiny` to `large-v3`) or the Deepgram model, `tts_model` a Coqui model name (it needs `tts_provider="coqui"`; the default is eSpeak, which takes none), `llm_model` a `.gguf` file or, with `llm_kwargs={"base_url": ...}`, a local server's model name. A model file that does not exist raises `FileNotFoundError` (`validate_models=False` skips the check). `prosody_model` is only a label. `is_fully_local` is `False`, with a warning, when a provider is a cloud service or the LLM's `base_url` is public.
+The model options go to the setting each provider takes, and impossible combinations raise `ValueError` at construction: `stt_model` is the Whisper model size (`tiny` to `large-v3`) or the Deepgram model, `tts_model` a Coqui model name (it needs `tts_provider="coqui"`; the default is eSpeak, which takes none), `llm_model` a `.gguf` file or, with `llm_kwargs={"base_url": ...}`, a local server's model name. A model file that does not exist raises `FileNotFoundError` (`validate_models=False` skips the check; `HybridEngine` takes the same option). An unrecognised Whisper model size is not checked until the model loads on first use. `prosody_model` is only a label. `is_fully_local` is `False`, with a warning, when a provider is a cloud service or the LLM's `base_url` is public.
 
 ### 4.2 Core Methods
 
@@ -278,7 +278,7 @@ Generates an LLM response using IML-annotated input.
 **Parameters:**
 - `iml` (str): IML-annotated input text (normally `Result.iml`)
 - `context` (str, optional): Conversation context (e.g., `"customer_support"`)
-- `tone` (str, optional): The tone of the *user's* voice, normally `Result.suggested_tone`. It is passed to the LLM as a hint and does not set the tone of the reply, which the LLM chooses from what the user needs (an angry caller may need a calm reply)
+- `tone` (str, optional): The tone of the *user's* voice, normally `Result.suggested_tone`. It is passed to the LLM as a hint and does not set the tone of the reply, which the LLM chooses from what the user needs (an angry caller may need a calm reply). `"neutral"` (what `suggested_tone` holds when no emotion was reported) or a blank tone sends no hint
 
 **Returns:** `Response` object (a frozen dataclass) with:
 
@@ -311,7 +311,7 @@ Speaks typed text as typed, with the given emotion (augmentative communication, 
 | Method | Description |
 |---|---|
 | `evaluate_result(intent, result, context=None) -> Decision` | Gate an action on a `Result` (Section 4.3) |
-| `evaluate_intent(intent, prosody_features, emotion=None, context=None, *, emotion_confidence=None, min_emotion_confidence=0.5) -> Decision` | The same with the values passed separately |
+| `evaluate_intent(intent, prosody_features, emotion=None, context=None, *, emotion_confidence=None, min_emotion_confidence=0.5) -> Decision` | One emotion per call, passed separately. Without `emotion_confidence` an abstention reads as a measured `neutral`, so prefer `evaluate_result`, which also weighs every sentence's emotion |
 | `load_profile(path)`, `set_profile(profile)`, `clear_profile()`, `create_profile(user_id, mappings, description=None, profile_version="1.0.0")`, `validate_profile(profile)` | Prosody profile management (Section 11.1) |
 | `clear_cache()`, `close()` | Drop cached results; stop the `*_sync` background loop |
 
@@ -345,10 +345,11 @@ decision = constitution.evaluate(
 
 1. Triggers match the intent as whole word sequences, ignoring case and `_`, `-` and other separators: the trigger `delete all` matches `delete_all_files` and `DeleteAllFiles`, but not `delete_files` or `undelete_all`, and an intent that is only part of a trigger (`delete` for the trigger `delete all`) does not match. Inflected forms (`payments` for `payment`) are separate words. An intent that matches no rule is allowed, and so is every intent when the engine has no rules.
 2. **Unknown emotion fails closed.** The emotion is unknown when it is missing or blank, or its `emotion_confidence` is below `min_emotion_confidence`. An unknown emotion fails a required `emotion` list, and never matches a forbidden one. A required `pitch_variance` or `speaking_rate` that could not be measured (no features, or no usable values) also fails.
-3. A rule whose `forbidden_prosody` matches is a hard deny. Otherwise, if `required_prosody` fails, the decision is a verification request when the rule has a `verification` block, and a hard deny when it has none. Otherwise the rule allows.
-4. When several rules match, the most restrictive decision wins: hard deny, then `two_factor`, then `explicit_confirmation`, then allow, whatever the order of the rules.
-5. Verification is a request to the caller: the filter neither asks for the confirmation nor counts `retries`. A spoken confirmation is a single utterance and reports no emotion, so confirm in a channel the caller controls.
-6. The detected emotion label is not written to logs above DEBUG or into `denial_reason`.
+3. **Every reported emotion of the turn is weighed.** `evaluate_result` evaluates the result's own emotion and each other emotion the assembler reported with confidence of at least `min_emotion_confidence` for a sentence of the turn (read from `result.iml_document`), and the most restrictive decision wins. A forbidden emotion in any sentence denies, even next to a more confident one, and every reported emotion must satisfy a required `emotion` list (`calm` in one sentence and `sad` in another asks for verification under a `[calm]` rule). Sentences with no reported emotion are ignored, not treated as unknown. `evaluate` and `evaluate_intent` see only the one emotion passed to them.
+4. A rule whose `forbidden_prosody` matches is a hard deny. Otherwise, if `required_prosody` fails, the decision is a verification request when the rule has a `verification` block, and a hard deny when it has none. Otherwise the rule allows.
+5. When several rules match, the most restrictive decision wins: hard deny, then `two_factor`, then `explicit_confirmation`, then allow, whatever the order of the rules.
+6. Verification is a request to the caller: the filter neither asks for the confirmation nor counts `retries`. A spoken confirmation is a single utterance and reports no emotion, so confirm in a channel the caller controls.
+7. The detected emotion label is not written to logs above DEBUG or into `denial_reason`.
 
 The intent label is written by the LLM (see Section 6.1), so it can vary between runs. Triggers must cover the phrasings that matter; for an action that must never slip through, pass the label of the action the code is about to run instead of the LLM's label.
 
@@ -379,7 +380,7 @@ rules:
 | `verification.method` | `explicit_confirmation` or `two_factor` |
 | `verification.retries` | Parsed and validated, otherwise unused: `Decision` has no field for it |
 
-**The schema is strict.** An unknown key at any level, a misspelled section, an empty section, a wrong-shaped or out-of-range value, a duplicate rule name, an empty `rules` mapping, an unknown top-level key, or a `pitch_variance` or `speaking_rate` under `forbidden_prosody` raises `ValueError` (naming the file and the rule) when the rules are loaded, so a safety condition is never silently dropped. Voice quality, jitter, shimmer, intensity and pause conditions are not available: they are unknown keys.
+**The schema is strict.** An unknown key at any level, a misspelled section, an empty section, a wrong-shaped or out-of-range value, a duplicate rule name, an empty `rules` mapping, an unknown top-level key, or a `pitch_variance` or `speaking_rate` under `forbidden_prosody` raises `ValueError` (naming the file and the rule) when the rules are loaded, so a safety condition is never silently dropped. Voice quality, jitter, shimmer, intensity and pause conditions are not available: they are unknown keys. A `verification` block needs a `required_prosody` (it says what to do when that fails), and a condition must set at least one of `emotion`, `pitch_variance` or `speaking_rate`; both raise `ValueError`. A rule with neither `required_prosody` nor `forbidden_prosody` still loads, matches, and never restricts anything, so a warning is logged on load.
 
 ---
 
@@ -410,7 +411,7 @@ The LLM receives a system prompt (`SYSTEM_PROMPT` in `intent_engine/llm/prompts.
 - That a missing `emotion` attribute means the emotion was not reliably detected, not that the speaker is neutral
 - Response guidelines: serve what the user needs, ask a short clarifying question when prosody and words disagree and it matters, never treat prosody as evidence of lying or truthfulness, and never base a consequential decision on it alone
 
-**Reply contract:** a JSON object with `intent` (a short snake_case label such as `request_help`), `response_text`, and `suggested_emotion` (one of the 13 core emotions; an adapter maps any other label to `neutral`). Fenced or padded JSON is tolerated; any other reply raises `LLMError`. `JSON_RESPONSE_SCHEMA` documents the contract and is not sent to providers. Every IML example and attribute value in the prompt validates with `IMLValidator`, which `tests/llm/test_prompt_iml_conformance.py` enforces.
+**Reply contract:** a JSON object with `intent` (a short snake_case label such as `request_help`), `response_text`, and `suggested_emotion` (one of the 13 core emotions; an adapter maps any other label to `neutral`). Fenced or padded JSON is tolerated; any other reply raises `LLMError`, including a reply with more than one JSON object or one that is cut off. Error messages give the reply's length, not its text (a short excerpt is logged at DEBUG only). `JSON_RESPONSE_SCHEMA` documents the contract and is not sent to providers. Every IML example and attribute value in the prompt validates with `IMLValidator`, which `tests/llm/test_prompt_iml_conformance.py` enforces.
 
 **Adapters:**
 
@@ -512,7 +513,7 @@ Intent Engine makes no compliance claim. It has no consent recording, opt-out, r
 ### 10.3 Emotional Data Ethics
 
 Emotional data is treated as sensitive PII. What the code does today:
-- Emotion labels and intents are kept out of INFO-and-above logs and out of constitutional `denial_reason`s, except that the TTS adapters log the emotion label they are asked to speak with
+- Emotion labels, intents and any text of an LLM reply are kept out of INFO-and-above logs, error messages and constitutional `denial_reason`s (a reply's length and, at DEBUG only, a short excerpt, are logged to help debug)
 - The emotion is optional: nothing downstream requires one, and the pipeline reports none when it cannot tell
 - The LLM prompt forbids reading prosody as evidence of lying or truthfulness, judging or profiling the speaker, or basing a consequential decision on prosody alone
 
