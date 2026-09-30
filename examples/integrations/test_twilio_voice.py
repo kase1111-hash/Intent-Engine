@@ -184,7 +184,43 @@ class TestHandleVoice:
         publisher.assert_awaited_once_with(audio)
         args, kwargs = engine.synthesize_speech.call_args
         assert "concern" in args[0].lower()
-        assert kwargs["emotion"] == result.suggested_tone
+        assert kwargs["emotion"] == "neutral"
+
+    @pytest.mark.parametrize(
+        ("emotion", "confidence"),
+        [("angry", 0.9), ("frustrated", 0.8), ("sad", 0.8), ("joyful", 0.9), ("neutral", 0.0)],
+    )
+    async def test_the_reply_is_never_spoken_in_the_callers_tone(
+        self, make_result: MakeResult, wav_bytes: bytes, emotion: str, confidence: float
+    ) -> None:
+        # Result.suggested_tone describes the caller.  An angry caller's
+        # de-escalation reply in an angry voice is the opposite of the point.
+        result = make_result(emotion=emotion, confidence=confidence)
+        engine = _engine(result)
+        handler = TwilioVoiceHandler(
+            engine,
+            download_func=AsyncMock(return_value=wav_bytes),
+            audio_publisher=AsyncMock(return_value="https://cdn.example.com/reply.mp3"),
+        )
+
+        await handler.handle_voice("https://api.twilio.com/recording")
+
+        assert engine.synthesize_speech.call_args.kwargs["emotion"] == "neutral"
+
+    async def test_the_reply_tone_can_be_chosen(
+        self, make_result: MakeResult, wav_bytes: bytes
+    ) -> None:
+        engine = _engine(make_result(emotion="angry", confidence=0.9))
+        handler = TwilioVoiceHandler(
+            engine,
+            download_func=AsyncMock(return_value=wav_bytes),
+            audio_publisher=AsyncMock(return_value="https://cdn.example.com/reply.mp3"),
+            reply_emotion="calm",
+        )
+
+        await handler.handle_voice("https://api.twilio.com/recording")
+
+        assert engine.synthesize_speech.call_args.kwargs["emotion"] == "calm"
 
     async def test_publisher_failure_falls_back_to_say(
         self, make_result: MakeResult, wav_bytes: bytes
@@ -346,17 +382,32 @@ class TestHandleVoiceErrors:
         ]
         assert "Hello there" in twiml
 
-    async def test_default_downloader_enforces_size_cap(self, mock_httpx: MockHttpx) -> None:
+    async def test_default_downloader_enforces_size_cap(
+        self, wav_bytes: bytes, mock_httpx: MockHttpx
+    ) -> None:
+        # Real audio one byte over the cap: nothing but the cap can refuse it.
         httpx = pytest.importorskip("httpx")
-        mock_httpx(lambda request: httpx.Response(200, content=b"x" * 200))
+        mock_httpx(lambda request: httpx.Response(200, content=wav_bytes))
         engine = MagicMock()
         engine.process_voice_input = AsyncMock()
-        handler = TwilioVoiceHandler(engine, max_download_bytes=100)
+        handler = TwilioVoiceHandler(engine, max_download_bytes=len(wav_bytes) - 1)
 
         twiml = await handler.handle_voice("https://api.twilio.com/rec")
 
         assert "trouble" in twiml.lower()
         engine.process_voice_input.assert_not_called()
+
+    async def test_default_downloader_accepts_a_recording_at_the_cap(
+        self, make_result: MakeResult, wav_bytes: bytes, mock_httpx: MockHttpx
+    ) -> None:
+        httpx = pytest.importorskip("httpx")
+        mock_httpx(lambda request: httpx.Response(200, content=wav_bytes))
+        engine = _engine(make_result(text="Hello there"))
+        handler = TwilioVoiceHandler(engine, max_download_bytes=len(wav_bytes))
+
+        twiml = await handler.handle_voice("https://api.twilio.com/rec")
+
+        assert "Hello there" in twiml
 
 
 # -- Signature validation --
@@ -378,4 +429,46 @@ class TestValidateTwilioSignature:
 
         assert not TwilioVoiceHandler.validate_twilio_signature(
             "https://example.com/voice", {"CallSid": "CA123"}, "forged", "token"
+        )
+
+    @pytest.mark.parametrize("token", ["", "   ", "\t\n", None])
+    def test_an_empty_auth_token_is_a_configuration_error(self, token: Any) -> None:
+        # HMAC with an empty key is something anyone can compute, so an unset
+        # TWILIO_AUTH_TOKEN must not turn the check into "accept everything".
+        with pytest.raises(ValueError, match="auth_token"):
+            TwilioVoiceHandler.validate_twilio_signature(
+                "https://example.com/voice", {"CallSid": "CA123"}, "anything", token
+            )
+
+    def test_a_signature_forged_with_an_empty_key_is_never_accepted(self) -> None:
+        pytest.importorskip("twilio")
+        from twilio.request_validator import RequestValidator
+
+        url = "https://example.com/voice"
+        params = {"CallSid": "CA123"}
+        forged = RequestValidator("").compute_signature(url, params)
+
+        assert not TwilioVoiceHandler.validate_twilio_signature(url, params, forged, "token")
+        with pytest.raises(ValueError):
+            TwilioVoiceHandler.validate_twilio_signature(url, params, forged, "")
+
+    @pytest.mark.parametrize("signature", [None, "", "\u00e9\u4e2d"])
+    def test_a_missing_or_malformed_signature_is_rejected(self, signature: Any) -> None:
+        # request.headers.get("X-Twilio-Signature") is None when the header is absent.
+        pytest.importorskip("twilio")
+
+        assert (
+            TwilioVoiceHandler.validate_twilio_signature(
+                "https://example.com/voice", {"CallSid": "CA123"}, signature, "token"
+            )
+            is False
+        )
+
+    @pytest.mark.parametrize("url", ["https://example.com:abc/voice", "https://[::1/voice"])
+    def test_a_malformed_url_is_rejected_not_raised(self, url: str) -> None:
+        # A hostile Host header can produce these when the URL is rebuilt from the request.
+        pytest.importorskip("twilio")
+
+        assert not TwilioVoiceHandler.validate_twilio_signature(
+            url, {"CallSid": "CA123"}, "signature", "token"
         )

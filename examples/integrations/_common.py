@@ -29,6 +29,9 @@ and uses the same 0.5 threshold for ``Result.suggested_tone``.
 DEFAULT_MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
 """Default cap on a downloaded recording or attachment (25 MiB)."""
 
+DEFAULT_TOTAL_TIMEOUT = 120.0
+"""Default limit, in seconds, on a whole download (the per-read timeout is 30 s)."""
+
 
 class MediaDownloadError(Exception):
     """A media download was refused (bad URL, too large) or failed."""
@@ -103,20 +106,29 @@ async def download_media(
     max_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
     headers: Mapping[str, str] | None = None,
     timeout: float = 30.0,
+    total_timeout: float = DEFAULT_TOTAL_TIMEOUT,
 ) -> bytes:
     """Download *url* into memory, refusing hosts and sizes it should not fetch.
 
     Only ``https`` URLs whose host is one of *allowed_hosts* (or a subdomain
     of one) are fetched, so credentials in *headers* are never sent
     anywhere else and a forged URL cannot be used to probe internal
-    services.  Redirects are not followed.  The body is streamed and
-    abandoned as soon as it exceeds *max_bytes*.
+    services.  Redirects are not followed.  The body is streamed, unencoded
+    (a response with a ``Content-Encoding`` is refused: the cap counts
+    decoded bytes, and a small compressed body can decode to far more than
+    *max_bytes* in one read), and abandoned as soon as it exceeds *max_bytes*
+    or the whole download has taken longer than *total_timeout* seconds
+    (*timeout* applies to each read, so a host that drips bytes would
+    otherwise stay connected indefinitely).
 
     Raises
     ------
     MediaDownloadError
-        If the URL is not allowed, the response is too large or not a 2xx,
-        or the request fails.  The message never includes the URL.
+        If the URL is not allowed, the response is too large, encoded or not
+        a 2xx, the download is too slow, or the request fails.  Signed CDN
+        URLs are credentials, and callers log the exception chain: the
+        message names the host at most, and the HTTP status error, whose text
+        repeats the whole URL (and a redirect's ``Location``), is not chained.
     """
     try:
         import httpx
@@ -137,14 +149,20 @@ async def download_media(
     ):
         raise MediaDownloadError("URL is not an https URL on an allowed host")
 
-    chunks: list[bytes] = []
-    size = 0
-    try:
+    # An encoded body would be decoded before it is counted.
+    request_headers = {k: v for k, v in (headers or {}).items() if k.lower() != "accept-encoding"}
+    request_headers["Accept-Encoding"] = "identity"
+
+    async def fetch() -> bytes:
+        chunks: list[bytes] = []
+        size = 0
         async with (
             httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client,
-            client.stream("GET", url, headers=dict(headers or {})) as resp,
+            client.stream("GET", url, headers=request_headers) as resp,
         ):
             resp.raise_for_status()
+            if resp.headers.get("content-encoding", "").strip().lower() not in ("", "identity"):
+                raise MediaDownloadError("Download refused (unexpected Content-Encoding)")
             declared = resp.headers.get("content-length", "")
             if declared.isdigit() and int(declared) > max_bytes:
                 raise MediaDownloadError(f"Download too large (limit {max_bytes} bytes)")
@@ -153,10 +171,19 @@ async def download_media(
                 if size > max_bytes:
                     raise MediaDownloadError(f"Download too large (limit {max_bytes} bytes)")
                 chunks.append(chunk)
+        return b"".join(chunks)
+
+    try:
+        return await asyncio.wait_for(fetch(), total_timeout)
+    except asyncio.TimeoutError as exc:
+        raise MediaDownloadError(f"Download timed out after {total_timeout:g} s") from exc
     except httpx.HTTPStatusError as exc:
+        # `from None`: the httpx error's text repeats the full URL (and a
+        # redirect's Location), which is a credential for signed CDN links,
+        # and callers log the exception chain.
         raise MediaDownloadError(
-            f"Download failed with HTTP {exc.response.status_code}"
-        ) from exc
+            f"Download failed with HTTP {exc.response.status_code} "
+            f"from {parsed.scheme}://{parsed.host}"
+        ) from None
     except httpx.HTTPError as exc:
         raise MediaDownloadError(f"Download failed ({type(exc).__name__})") from exc
-    return b"".join(chunks)

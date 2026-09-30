@@ -92,6 +92,12 @@ class TwilioVoiceHandler:
         Largest recording the default downloader accepts.
     allowed_hosts:
         Hosts (and their subdomains) the default downloader may fetch from.
+    reply_emotion:
+        Emotion the reply is synthesized with (only used with
+        ``audio_publisher``).  The caller's own emotion is never used:
+        ``Result.suggested_tone`` describes the caller, and the reply here is
+        not an LLM ``Response``, so it has no ``Response.emotion`` of its own.
+        An angry caller's de-escalation reply should not be spoken angrily.
     """
 
     def __init__(
@@ -103,6 +109,7 @@ class TwilioVoiceHandler:
         audio_publisher: Callable[[Audio], Awaitable[str]] | None = None,
         max_download_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
         allowed_hosts: Iterable[str] = TWILIO_HOSTS,
+        reply_emotion: str = "neutral",
     ) -> None:
         self._engine = engine
         self._response_callback = response_callback
@@ -110,6 +117,7 @@ class TwilioVoiceHandler:
         self._audio_publisher = audio_publisher
         self._max_download_bytes = max_download_bytes
         self._allowed_hosts = tuple(allowed_hosts)
+        self._reply_emotion = reply_emotion
 
     async def _download_audio(self, url: str) -> bytes:
         """Download audio bytes from a URL."""
@@ -161,7 +169,7 @@ class TwilioVoiceHandler:
             else:
                 response_text = self._default_response(result)
 
-            return await self._respond(response_text, result)
+            return await self._respond(response_text)
 
         except Exception:
             # A failed recording must not turn into Twilio's "application
@@ -169,13 +177,13 @@ class TwilioVoiceHandler:
             logger.exception("Error processing Twilio call %s", call_sid)
             return self._build_twiml(text=_APOLOGY)
 
-    async def _respond(self, text: str, result: Result) -> str:
+    async def _respond(self, text: str) -> str:
         """Build the TwiML for *text*, using synthesized audio when possible."""
         if self._audio_publisher is None:
             return self._build_twiml(text=text)
 
         try:
-            audio = await self._engine.synthesize_speech(text, emotion=result.suggested_tone)
+            audio = await self._engine.synthesize_speech(text, emotion=self._reply_emotion)
             audio_url = await self._audio_publisher(audio)
         except Exception:
             logger.exception("Could not synthesize or publish the reply; using <Say>")
@@ -226,7 +234,7 @@ class TwilioVoiceHandler:
     def validate_twilio_signature(
         url: str,
         params: dict[str, str],
-        signature: str,
+        signature: str | None,
         auth_token: str,
     ) -> bool:
         """Validate a Twilio request signature for security.
@@ -240,15 +248,27 @@ class TwilioVoiceHandler:
         params:
             The POST parameters from Twilio.
         signature:
-            The ``X-Twilio-Signature`` header value.
+            The ``X-Twilio-Signature`` header value; ``None`` (the header
+            is absent) never validates.
         auth_token:
             Your Twilio auth token.
 
         Returns
         -------
         bool
-            ``True`` if the signature is valid.
+            ``True`` if the signature is valid; ``False`` for a wrong,
+            missing or malformed signature or a malformed *url*.
+
+        Raises
+        ------
+        ValueError
+            If *auth_token* is empty.  A signature made with an empty key
+            can be computed by anyone, so an unset ``TWILIO_AUTH_TOKEN``
+            must be a loud configuration error, not a check that passes.
         """
+        if not isinstance(auth_token, str) or not auth_token.strip():
+            raise ValueError("auth_token must be a non-empty string (is TWILIO_AUTH_TOKEN set?)")
+
         try:
             from twilio.request_validator import RequestValidator
         except ImportError as exc:
@@ -258,4 +278,10 @@ class TwilioVoiceHandler:
             ) from exc
 
         validator = RequestValidator(auth_token)
-        return bool(validator.validate(url, params, signature))
+        try:
+            return bool(validator.validate(url, params, signature))
+        except (TypeError, ValueError):
+            # No signature header (None), or a malformed url such as a bad port or
+            # IPv6 host: not a valid request.  The token is checked above, outside
+            # the try, so a misconfiguration is never reported as a bad request.
+            return False

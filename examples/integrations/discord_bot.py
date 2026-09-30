@@ -253,7 +253,6 @@ class DiscordBotHelper:
             embed = discord.Embed(colour=emotion_colors.get(result.emotion, 0x808080))
             embed.add_field(name="Emotion", value=result.emotion, inline=True)
             embed.add_field(name="Confidence", value=f"{result.confidence:.0%}", inline=True)
-            embed.add_field(name="Suggested Tone", value=result.suggested_tone, inline=True)
             message["embed"] = embed
 
         return message

@@ -19,10 +19,12 @@ import pytest
 from prosody_protocol import AudioProcessingError, IMLParseError, IMLValidator, SpanFeatures
 
 from examples.integrations.rest_server import create_app, create_app_from_env
+from intent_engine.engine import IntentEngine
 from intent_engine.errors import IntentEngineError, LLMError, STTError, TTSError
 from intent_engine.models.audio import Audio
 from intent_engine.models.response import Response
 from intent_engine.models.result import Result
+from intent_engine.stt.base import STTProvider, TranscriptionResult
 
 pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
@@ -162,6 +164,35 @@ class TestFactory:
             create_app_from_env()
 
         assert "INTENT_API_KEY" in caplog.text
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_an_empty_api_key_is_refused_not_treated_as_no_authentication(
+        self, env_engine: MagicMock, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        # `INTENT_API_KEY=${INTENT_API_KEY}` in a compose file or k8s template
+        # expands to "" when the variable is undefined; that must not start an
+        # open server.  Only a variable that is not set at all means "no key".
+        monkeypatch.setenv("INTENT_API_KEY", value)
+
+        with pytest.raises(ValueError, match="INTENT_API_KEY"):
+            create_app_from_env()
+
+        env_engine.assert_not_called()  # refused before any provider is built
+
+    def test_an_unset_api_key_is_still_allowed(self, env_engine: MagicMock) -> None:
+        client = _test_client(create_app_from_env())
+
+        assert client.post("/synthesize", json={"text": "hi"}).status_code == 200
+
+    def test_empty_provider_variables_keep_the_defaults(
+        self, env_engine: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for name in ("INTENT_STT_PROVIDER", "INTENT_LLM_PROVIDER", "INTENT_TTS_PROVIDER"):
+            monkeypatch.setenv(name, "")
+
+        create_app_from_env()
+
+        env_engine.assert_called_once_with()
 
     def test_uvicorn_serves_the_factory(self, env_engine: MagicMock) -> None:
         # The command the README documents:
@@ -429,6 +460,80 @@ class TestSizeLimits:
         assert resp.status_code == 413
         engine.generate_response.assert_not_called()
 
+    @pytest.mark.parametrize("path", ["/generate", "/synthesize"])
+    def test_json_endpoints_are_limited_whatever_content_type_the_client_claims(
+        self, path: str
+    ) -> None:
+        # The upload limit is for /process only.  Choosing the limit from the
+        # request's Content-Type lets any client get the 25 MiB one on the
+        # JSON endpoints by calling its body multipart/form-data.
+        engine = _engine()
+
+        resp = _client(engine).post(
+            path,
+            content=b"a" * 5_000_000,
+            headers={"content-type": "multipart/form-data; boundary=zz"},
+        )
+
+        assert resp.status_code == 413
+        assert "payload_too_large" in resp.text
+        engine.generate_response.assert_not_called()
+        engine.synthesize_speech.assert_not_called()
+
+    @staticmethod
+    def _small_limits(engine: MagicMock) -> Any:
+        # The middleware allows 64 KiB of multipart framing on top of the upload
+        # limit, so a 200 KB request is stopped by the middleware, before Starlette
+        # spools it, and not by the handler's own byte count afterwards.
+        return _client(engine, max_upload_bytes=1000)
+
+    def test_the_size_middleware_rejects_a_declared_oversize_upload(
+        self, wav_bytes: bytes
+    ) -> None:
+        engine = _engine()
+
+        resp = self._small_limits(engine).post(
+            "/process", files=_upload(wav_bytes + b"\x00" * 200_000)
+        )
+
+        assert resp.status_code == 413
+        assert "payload_too_large" in resp.text  # answered by the middleware, not the handler
+        engine.process_voice_input.assert_not_called()
+
+    def test_the_size_middleware_rejects_a_chunked_oversize_upload(self, wav_bytes: bytes) -> None:
+        engine = _engine()
+        head = (
+            b'--x\r\nContent-Disposition: form-data; name="audio"; filename="a.wav"\r\n'
+            b"Content-Type: audio/wav\r\n\r\n"
+        )
+
+        def body() -> Iterator[bytes]:
+            yield head
+            yield wav_bytes
+            for _ in range(200):
+                yield b"\x00" * 1024
+            yield b"\r\n--x--\r\n"
+
+        resp = self._small_limits(engine).post(
+            "/process", content=body(), headers={"content-type": "multipart/form-data; boundary=x"}
+        )
+
+        assert resp.status_code == 413
+        assert "payload_too_large" in resp.text
+        engine.process_voice_input.assert_not_called()
+
+    def test_an_upload_larger_than_the_json_limit_is_accepted(
+        self, make_result: MakeResult, wav_bytes: bytes
+    ) -> None:
+        # /process may take max_upload_bytes even when the JSON limit is far smaller.
+        engine = _engine(make_result())
+        client = _client(engine, max_upload_bytes=300_000, max_iml_chars=10, max_text_chars=10)
+
+        resp = client.post("/process", files=_upload(wav_bytes + b"\x00" * 250_000))
+
+        assert resp.status_code == 200
+        engine.process_voice_input.assert_called_once()
+
     def test_synthesize_text_too_long_is_422(self) -> None:
         engine = _engine()
 
@@ -499,6 +604,14 @@ class TestAuthentication:
         engine.generate_response.assert_not_called()
         engine.synthesize_speech.assert_not_called()
 
+    @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+    def test_only_health_is_exempt(self, path: str) -> None:
+        # The API description is as private as the endpoints.
+        client = self._client()
+
+        assert client.get(path).status_code == 401
+        assert client.get(path, headers={"X-API-Key": self.KEY}).status_code == 200
+
     def test_correct_key_is_accepted(self) -> None:
         resp = self._client().post(
             "/synthesize", json={"text": "hi"}, headers={"X-API-Key": self.KEY}
@@ -519,7 +632,9 @@ class TestAuthentication:
 
     def test_key_is_checked_before_the_size_limit(self) -> None:
         # An unauthenticated client learns nothing about limits and cannot
-        # make the server look at its body.
+        # make the server look at its body.  This request is over the size
+        # middleware's limit, so a 401 (and not a 413) shows that the key was
+        # checked first.
         engine = _engine()
         client = self._client(engine, max_upload_bytes=1000)
 
@@ -528,12 +643,114 @@ class TestAuthentication:
         assert resp.status_code == 401
         engine.process_voice_input.assert_not_called()
 
+    def test_health_stays_open_behind_a_path_prefix(self) -> None:
+        # Under uvicorn --root-path /api, scope["path"] is "/api/health" while
+        # the router sees "/health"; the exemption has to use the latter.
+        client = self._prefixed_client()
+
+        assert client.get("/api/health").status_code == 200
+        assert client.post("/api/synthesize", json={"text": "hi"}).status_code == 401
+
+    @pytest.mark.parametrize("path", ["/api/api/health", "/apihealth", "/api/health/x"])
+    def test_a_prefix_does_not_widen_the_exemption(self, path: str) -> None:
+        assert self._prefixed_client().get(path).status_code in (401, 404)
+
+    def test_upload_limit_applies_to_process_behind_a_path_prefix(
+        self, make_result: MakeResult, wav_bytes: bytes
+    ) -> None:
+        # 3 MB is over the JSON limit (about 2.5 MB) and far under the upload limit.
+        from starlette.testclient import TestClient
+
+        client = TestClient(create_app(engine=_engine(make_result())), root_path="/api")
+
+        resp = client.post("/api/process", files=_upload(wav_bytes + b"\x00" * 3_000_000))
+
+        assert resp.status_code == 200
+
+    def _prefixed_client(self) -> Any:
+        from starlette.testclient import TestClient
+
+        app = create_app(engine=_engine(), api_key=self.KEY)
+        return TestClient(app, root_path="/api", raise_server_exceptions=False)
+
 
 # -- Error mapping: client mistakes are 4xx, failures upstream 502, nothing leaks --
 
 
+class _StubSTT(STTProvider):
+    """An STT provider that fails, or answers, without a network or a model."""
+
+    def __init__(self, *, error: Exception | None = None, text: str = "hello there") -> None:
+        self._error = error
+        self._text = text
+
+    async def transcribe(self, audio_path: str) -> TranscriptionResult:
+        if self._error is not None:
+            raise self._error
+        return TranscriptionResult(text=self._text, alignments=[], language="en")
+
+
+def _real_engine(stt: STTProvider) -> IntentEngine:
+    """The real ``IntentEngine`` (real orchestration, analysis and IML) over a stub STT."""
+    with (
+        patch("intent_engine.engine.create_stt_provider", return_value=stt),
+        patch("intent_engine.engine.create_llm_provider", return_value=MagicMock()),
+        patch("intent_engine.engine.create_tts_provider", return_value=MagicMock()),
+    ):
+        return IntentEngine()
+
+
+# Passes the container check (RIFF....WAVE) but is not decodable audio.
+CORRUPT_WAV = b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00garbage"
+
+
+class TestRealEngineOnUndecodableAudio:
+    """What a client sees for an upload the format check passes but no decoder can read.
+
+    ``IntentEngine`` never raises ``AudioProcessingError``: an STT failure is
+    an ``STTError`` (a 502, like any provider failure) and a prosody analysis
+    failure degrades to text-only IML (a 200).  These tests drive the real
+    engine, so they show what the API answers and not what a mock says.
+    """
+
+    def test_stt_failing_to_read_the_audio_is_a_502_without_internal_paths(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # What WhisperSTT raises when ffmpeg cannot load the file.
+        error = STTError(
+            "Whisper transcription failed: RuntimeError: "
+            "Failed to load audio: /tmp/tmpfyzx9vwt/audio.wav"
+        )
+        client = _client(_real_engine(_StubSTT(error=error)))
+
+        with caplog.at_level(logging.WARNING):
+            resp = client.post("/process", files=_upload(CORRUPT_WAV))
+
+        assert resp.status_code == 502
+        assert "/tmp" not in resp.text
+        assert "/tmp/tmpfyzx9vwt/audio.wav" in caplog.text  # the operator still gets the cause
+
+    def test_prosody_that_cannot_read_the_audio_gives_a_text_only_answer(self) -> None:
+        pytest.importorskip("numpy")
+        pytest.importorskip("parselmouth")
+        client = _client(_real_engine(_StubSTT(text="hello there")))
+
+        resp = client.post("/process", files=_upload(CORRUPT_WAV))
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["text"] == "hello there"
+        assert data["prosody_features"] == []
+        assert (data["emotion"], data["confidence"]) == ("neutral", 0.0)
+        assert "<prosody" not in data["iml"]
+
+
 class TestErrorMapping:
-    def test_undecodable_audio_is_422_without_internal_paths(self, wav_bytes: bytes) -> None:
+    def test_audio_processing_error_from_a_custom_engine_is_422_without_internal_paths(
+        self, wav_bytes: bytes
+    ) -> None:
+        # IntentEngine never raises this (see TestRealEngineOnUndecodableAudio),
+        # but the app takes any engine object, and one that does raises a client error.
         engine = _engine()
         engine.process_voice_input = AsyncMock(
             side_effect=AudioProcessingError("Cannot read audio file /tmp/tmpfyzx9vwt/audio.wav")

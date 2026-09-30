@@ -147,8 +147,23 @@ class SlackBotHelper:
         Returns
         -------
         bool
-            ``True`` if the signature matches and the request is recent.
+            ``True`` if the signature matches and the request is recent;
+            ``False`` for anything else, including missing or malformed
+            headers.
+
+        Raises
+        ------
+        ValueError
+            If *signing_secret* is empty.  ``slack_sdk`` before 3.43 signs
+            with an empty secret without complaint, and anyone can forge
+            such a signature, so an unset ``SLACK_SIGNING_SECRET`` must be a
+            loud configuration error on every SDK version.
         """
+        if not isinstance(signing_secret, str) or not signing_secret.strip():
+            raise ValueError(
+                "signing_secret must be a non-empty string (is SLACK_SIGNING_SECRET set?)"
+            )
+
         try:
             from slack_sdk.signature import SignatureVerifier
         except ImportError as exc:
@@ -160,7 +175,10 @@ class SlackBotHelper:
         verifier = SignatureVerifier(signing_secret)
         try:
             return verifier.is_valid_request(body, headers)
-        except ValueError:  # non-numeric timestamp header
+        except (ValueError, TypeError):
+            # A non-numeric timestamp header or an undecodable body (ValueError),
+            # or a non-ASCII signature header, which hmac.compare_digest rejects
+            # with TypeError.  All of them are simply not a valid request.
             return False
 
     async def process_audio_file(
@@ -261,8 +279,7 @@ class SlackBotHelper:
                             "type": "mrkdwn",
                             "text": (
                                 f"Emotion: *{result.emotion}* | "
-                                f"Confidence: {result.confidence:.0%} | "
-                                f"Suggested tone: *{result.suggested_tone}*"
+                                f"Confidence: {result.confidence:.0%}"
                             ),
                         }
                     ],

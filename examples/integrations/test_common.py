@@ -33,6 +33,11 @@ class TestEmotionReported:
     def test_low_confidence_is_not_reported(self, make_result: Callable[..., Any]) -> None:
         assert not emotion_reported(make_result(emotion="sad", confidence=0.3))
 
+    def test_the_threshold_is_the_engines_own(self, make_result: Callable[..., Any]) -> None:
+        # Result.suggested_tone switches to the emotion at 0.5, and so do the examples.
+        assert emotion_reported(make_result(emotion="sad", confidence=0.5))
+        assert not emotion_reported(make_result(emotion="sad", confidence=0.49))
+
 
 # -- Audio type detection --
 

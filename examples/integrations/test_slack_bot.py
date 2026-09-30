@@ -115,11 +115,21 @@ class TestBuildSlackMessage:
         assert msg["blocks"][1]["type"] == "context"
 
     def test_context_block_has_emotion(self, make_result: MakeResult) -> None:
-        result = make_result(emotion="sad", confidence=0.8, suggested_tone="empathetic")
+        result = make_result(emotion="sad", confidence=0.8)
         msg = SlackBotHelper._build_slack_message("text", result=result)
         context_text = msg["blocks"][1]["elements"][0]["text"]
-        assert "sad" in context_text
-        assert "empathetic" in context_text
+        assert context_text == "Emotion: *sad* | Confidence: 80%"
+
+    def test_the_callers_tone_is_not_presented_as_a_tone_to_use(
+        self, make_result: MakeResult
+    ) -> None:
+        # Result.suggested_tone describes the person who spoke, and equals the
+        # emotion whenever one is shown; labelling it "Suggested tone" reads as
+        # advice on how to answer.
+        result = make_result(emotion="angry", confidence=0.9, suggested_tone="calm")
+        msg = SlackBotHelper._build_slack_message("text", result=result)
+        assert "uggested" not in str(msg)
+        assert "calm" not in str(msg)
 
     def test_abstention_adds_no_emotion_block(self, make_result: MakeResult) -> None:
         msg = SlackBotHelper._build_slack_message("hello", result=make_result())
@@ -307,17 +317,36 @@ class TestDownloadSafety:
 
         assert "authorization" not in seen[0].headers
 
-    async def test_oversize_download_is_refused(self, mock_httpx: MockHttpx) -> None:
+    async def test_oversize_download_is_refused(
+        self, wav_bytes: bytes, mock_httpx: MockHttpx
+    ) -> None:
+        # Real audio one byte over the cap: nothing but the cap can refuse it.
         httpx = pytest.importorskip("httpx")
-        mock_httpx(lambda request: httpx.Response(200, content=b"x" * 500))
+        mock_httpx(lambda request: httpx.Response(200, content=wav_bytes))
         engine = MagicMock()
         engine.process_voice_input = AsyncMock()
-        helper = SlackBotHelper(engine, max_download_bytes=100)
+        helper = SlackBotHelper(engine, max_download_bytes=len(wav_bytes) - 1)
 
         msg = await helper.process_audio_file("https://files.slack.com/f.wav")
 
         assert "Failed to process" in msg["text"]
         engine.process_voice_input.assert_not_called()
+
+    async def test_download_at_the_cap_is_accepted(
+        self, make_result: MakeResult, wav_bytes: bytes, mock_httpx: MockHttpx
+    ) -> None:
+        httpx = pytest.importorskip("httpx")
+        mock_httpx(lambda request: httpx.Response(200, content=wav_bytes))
+        helper = _helper(
+            make_result(text="hello"),
+            wav_bytes,
+            download_func=None,
+            max_download_bytes=len(wav_bytes),
+        )
+
+        msg = await helper.process_audio_file("https://files.slack.com/f.wav")
+
+        assert "hello" in msg["text"]
 
 
 # -- Request signature verification --
@@ -329,7 +358,8 @@ class TestVerifySignature:
 
     def _sign(self, timestamp: str, body: str, secret: str | None = None) -> str:
         base = f"v0:{timestamp}:{body}".encode()
-        digest = hmac.new((secret or self.SECRET).encode(), base, hashlib.sha256).hexdigest()
+        key = self.SECRET if secret is None else secret
+        digest = hmac.new(key.encode(), base, hashlib.sha256).hexdigest()
         return f"v0={digest}"
 
     def _headers(self, timestamp: str, signature: str) -> dict[str, str]:
@@ -377,16 +407,74 @@ class TestVerifySignature:
 
         assert not SlackBotHelper.verify_signature(self.BODY, {}, self.SECRET)
 
+    @pytest.mark.parametrize("signature", ["v0=\u00e9", "v0=\u4e2d", "", "v0="])
+    def test_rejects_a_malformed_signature_header(self, signature: str) -> None:
+        # ASGI/WSGI servers decode header bytes as latin-1, so a non-ASCII value
+        # is reachable; hmac.compare_digest raises TypeError on it.
+        pytest.importorskip("slack_sdk")
+        ts = str(int(time.time()))
+
+        assert (
+            SlackBotHelper.verify_signature(self.BODY, self._headers(ts, signature), self.SECRET)
+            is False
+        )
+
+    def test_rejects_an_undecodable_body(self) -> None:
+        pytest.importorskip("slack_sdk")
+        ts = str(int(time.time()))
+
+        assert not SlackBotHelper.verify_signature(
+            b"\xff\xfe", self._headers(ts, self._sign(ts, self.BODY)), self.SECRET
+        )
+
+    @pytest.mark.parametrize("secret", ["", "   ", "\t\n", None])
+    def test_an_empty_signing_secret_is_a_configuration_error(self, secret: Any) -> None:
+        with pytest.raises(ValueError, match="signing_secret"):
+            SlackBotHelper.verify_signature(self.BODY, {}, secret)
+
+    @pytest.mark.parametrize("secret", ["", "   "])
+    def test_an_empty_secret_does_not_verify_on_sdks_that_accept_one(
+        self, secret: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # slack_sdk before 3.43 signs with whatever secret it is given, empty
+        # included, and pyproject allows those versions.  Stand in for one:
+        # a request forged with the empty key is "valid" to it, so only our
+        # own check keeps it out.
+        signature = pytest.importorskip("slack_sdk.signature")
+
+        class LenientVerifier(signature.SignatureVerifier):
+            signing_secret = ""  # a plain attribute, not the validating property
+
+        monkeypatch.setattr(signature, "SignatureVerifier", LenientVerifier)
+        ts = str(int(time.time()))
+        headers = self._headers(ts, self._sign(ts, self.BODY, secret=secret))
+        assert LenientVerifier(secret).is_valid_request(self.BODY, headers), "stand-in is lenient"
+
+        with pytest.raises(ValueError, match="signing_secret"):
+            SlackBotHelper.verify_signature(self.BODY, headers, secret)
+
 
 # -- handle_file_shared_event --
 
 
 class TestHandleFileSharedEvent:
     async def test_non_audio_returns_none(self) -> None:
-        helper = SlackBotHelper(MagicMock())
-        event = {"file": {"mimetype": "image/png"}}
+        # It has a download URL and a channel, so only its type keeps it from being processed.
+        download = AsyncMock()
+        engine = MagicMock()
+        engine.process_voice_input = AsyncMock()
+        helper = SlackBotHelper(engine, download_func=download)
+        event = {
+            "file": {
+                "mimetype": "image/png",
+                "url_private_download": "https://files.slack.com/picture.png",
+            },
+            "channel": "C1",
+        }
 
         assert await helper.handle_file_shared_event(event) is None
+        download.assert_not_called()
+        engine.process_voice_input.assert_not_called()
 
     async def test_no_download_url_returns_none(self) -> None:
         helper = SlackBotHelper(MagicMock())

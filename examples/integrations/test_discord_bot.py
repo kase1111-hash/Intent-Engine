@@ -108,14 +108,23 @@ class TestBuildDiscordMessage:
     def test_with_result_has_embed(self, make_result: MakeResult) -> None:
         msg = DiscordBotHelper._build_discord_message("hello", result=_joyful(make_result))
         assert isinstance(msg["embed"], discord.Embed)
-        assert len(msg["embed"].fields) == 3
+        assert len(msg["embed"].fields) == 2
 
     def test_embed_fields(self, make_result: MakeResult) -> None:
-        result = make_result(emotion="sad", confidence=0.7, suggested_tone="empathetic")
+        result = make_result(emotion="sad", confidence=0.7)
         fields = DiscordBotHelper._build_discord_message("text", result=result)["embed"].fields
-        assert fields[0].value == "sad"
-        assert fields[1].value == "70%"
-        assert fields[2].value == "empathetic"
+        assert [(f.name, f.value) for f in fields] == [("Emotion", "sad"), ("Confidence", "70%")]
+
+    def test_the_callers_tone_is_not_presented_as_a_tone_to_use(
+        self, make_result: MakeResult
+    ) -> None:
+        # Result.suggested_tone describes the person who spoke, and equals the
+        # emotion whenever one is shown; labelling it "Suggested Tone" reads as
+        # advice on how to answer.
+        result = make_result(emotion="angry", confidence=0.9, suggested_tone="calm")
+        embed = DiscordBotHelper._build_discord_message("text", result=result)["embed"]
+        assert "uggested" not in str(embed.to_dict())
+        assert "calm" not in str(embed.to_dict())
 
     def test_emotion_color_joyful(self, make_result: MakeResult) -> None:
         msg = DiscordBotHelper._build_discord_message("text", result=_joyful(make_result))
@@ -317,17 +326,36 @@ class TestDownloadSafety:
         assert len(seen) == 1
         assert "hello" in msg["content"]
 
-    async def test_oversize_download_is_refused(self, mock_httpx: MockHttpx) -> None:
+    async def test_oversize_download_is_refused(
+        self, wav_bytes: bytes, mock_httpx: MockHttpx
+    ) -> None:
+        # Real audio one byte over the cap: nothing but the cap can refuse it.
         httpx = pytest.importorskip("httpx")
-        mock_httpx(lambda request: httpx.Response(200, content=b"x" * 500))
+        mock_httpx(lambda request: httpx.Response(200, content=wav_bytes))
         engine = MagicMock()
         engine.process_voice_input = AsyncMock()
-        helper = DiscordBotHelper(engine, max_download_bytes=100)
+        helper = DiscordBotHelper(engine, max_download_bytes=len(wav_bytes) - 1)
 
         msg = await helper.process_audio_url("https://cdn.discordapp.com/f.wav")
 
         assert "Failed to process" in msg["content"]
         engine.process_voice_input.assert_not_called()
+
+    async def test_download_at_the_cap_is_accepted(
+        self, make_result: MakeResult, wav_bytes: bytes, mock_httpx: MockHttpx
+    ) -> None:
+        httpx = pytest.importorskip("httpx")
+        mock_httpx(lambda request: httpx.Response(200, content=wav_bytes))
+        helper = _helper(
+            make_result(text="hello"),
+            wav_bytes,
+            download_func=None,
+            max_download_bytes=len(wav_bytes),
+        )
+
+        msg = await helper.process_audio_url("https://cdn.discordapp.com/f.wav")
+
+        assert "hello" in msg["content"]
 
 
 # -- process_audio_attachment --

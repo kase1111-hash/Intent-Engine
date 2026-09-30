@@ -38,7 +38,7 @@ import importlib.util
 import logging
 import os
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from typing import Annotated, Any
 
 from prosody_protocol import (
@@ -69,6 +69,8 @@ _UPLOAD_CHUNK_BYTES = 64 * 1024
 _MULTIPART_OVERHEAD_BYTES = 64 * 1024
 # A JSON encoder may write one character as up to 12 bytes (an escaped surrogate pair).
 _JSON_BYTES_PER_CHAR = 12
+# The only routes that take an upload; every other body is limited as JSON.
+_UPLOAD_PATHS = frozenset({"/process"})
 
 
 def _package_version() -> str:
@@ -76,6 +78,18 @@ def _package_version() -> str:
         return importlib.metadata.version("intent-engine")
     except importlib.metadata.PackageNotFoundError:
         return "unknown"
+
+
+def _route_path(scope: Mapping[str, Any]) -> str:
+    """The request path relative to the app's mount point, as the router sees it.
+
+    ASGI servers put the ``root_path`` (uvicorn ``--root-path``, or the prefix a
+    reverse proxy strips) in front of ``scope["path"]``, while routes are
+    matched without it; anything that decides by route has to do the same.
+    """
+    path: str = scope["path"]
+    root = scope.get("root_path", "")
+    return path[len(root) :] if root and path.startswith(root) else path
 
 
 def create_app(
@@ -116,10 +130,14 @@ def create_app(
 
     Notes
     -----
-    Client mistakes (unsupported or undecodable audio, invalid IML) are
-    answered with 415/422, failures of the STT/LLM/TTS providers with 502
-    and anything else with 500.  Responses never contain exception text; the
-    real cause is logged together with the ``error id`` the response quotes.
+    Client mistakes (an empty upload, an unsupported container, invalid IML)
+    are answered with 415/422, failures of the STT/LLM/TTS providers with 502
+    and anything else with 500.  The upload check only looks at the file's
+    first bytes: audio that passes it but that the STT provider cannot decode
+    is a provider failure (502), and audio the prosody analysis cannot read
+    but the STT provider can is answered with a text-only result (200).
+    Responses never contain exception text; the real cause is logged together
+    with the ``error id`` the response quotes.
     """
     try:
         from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -203,7 +221,7 @@ def create_app(
             self._exempt = frozenset(exempt_paths)
 
         async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-            if scope["type"] == "http" and scope["path"] not in self._exempt:
+            if scope["type"] == "http" and _route_path(scope) not in self._exempt:
                 # Header values are decoded as latin-1; encoding them the same way
                 # gives back the bytes the client sent.
                 supplied = Headers(scope=scope).get("x-api-key", "").encode("latin-1")
@@ -215,10 +233,34 @@ def create_app(
                     return
             await self.app(scope, receive, send)
 
+    class RouteSizeLimitMiddleware:
+        """Limit request bodies by route: uploads only on ``/process``.
+
+        ``UploadSizeLimitMiddleware`` alone lets a request past the tighter
+        JSON limit when its ``Content-Type`` says ``multipart/form-data``, and
+        the client chooses that header.  Every other route is a JSON endpoint
+        that buffers its whole body, so it gets the JSON limit whatever the
+        header claims.
+        """
+
+        def __init__(self, app: ASGIApp, *, upload_bytes: int, json_bytes: int) -> None:
+            self._upload = UploadSizeLimitMiddleware(
+                app, max_bytes=upload_bytes, upload_setting="max_upload_bytes"
+            )
+            self._json = UploadSizeLimitMiddleware(
+                app, max_bytes=json_bytes, upload_setting="max_iml_chars / max_text_chars"
+            )
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            is_upload = scope["type"] == "http" and _route_path(scope) in _UPLOAD_PATHS
+            await (self._upload if is_upload else self._json)(scope, receive, send)
+
     def http_error(exc: Exception, action: str) -> HTTPException:
         """Map a pipeline failure to an HTTP error and log the real cause."""
         error_id = uuid.uuid4().hex[:12]
         if isinstance(exc, AudioProcessingError):
+            # IntentEngine never raises this (it degrades to text-only IML), but
+            # the app takes any engine object, and a custom one may.
             status, message = 422, "The audio could not be decoded"
         elif isinstance(exc, (IMLParseError, IMLValidationError)):
             status, message = 422, "The IML is invalid"
@@ -242,11 +284,9 @@ def create_app(
     max_json_bytes = _JSON_BYTES_PER_CHAR * (max_iml_chars + max_text_chars + _MAX_LABEL_CHARS)
     max_json_bytes += _MULTIPART_OVERHEAD_BYTES
     api.add_middleware(
-        UploadSizeLimitMiddleware,
-        max_bytes=max(max_upload_bytes + _MULTIPART_OVERHEAD_BYTES, max_json_bytes),
-        max_json_bytes=max_json_bytes,
-        upload_setting="max_upload_bytes",
-        json_setting="max_iml_chars / max_text_chars",
+        RouteSizeLimitMiddleware,
+        upload_bytes=max_upload_bytes + _MULTIPART_OVERHEAD_BYTES,
+        json_bytes=max_json_bytes,
     )
     if api_key is not None:
         api.add_middleware(ApiKeyMiddleware, key=api_key)
@@ -361,11 +401,20 @@ def create_app_from_env() -> Any:
     ``INTENT_LLM_PROVIDER``       ``llm_provider`` of ``IntentEngine``
     ``INTENT_TTS_PROVIDER``       ``tts_provider`` of ``IntentEngine``
     ``INTENT_API_KEY``            required ``X-API-Key`` value; unset means
-                                  no authentication (a warning is logged)
+                                  no authentication (a warning is logged),
+                                  set but empty is an error
     ============================  ==========================================
 
     Unset (or empty) provider variables keep the ``IntentEngine`` defaults;
     provider credentials are read by the provider adapters as usual.
+
+    Raises
+    ------
+    ValueError
+        If ``INTENT_API_KEY`` is set to an empty value.  A template such as
+        ``INTENT_API_KEY=${INTENT_API_KEY}`` expands to that when the variable
+        is undefined, and starting an open server because of it would be worse
+        than not starting.  Unset the variable to run without authentication.
     """
     engine_kwargs: dict[str, Any] = {
         kwarg: os.environ[var]
@@ -376,7 +425,12 @@ def create_app_from_env() -> Any:
         )
         if os.environ.get(var)
     }
-    api_key = os.environ.get("INTENT_API_KEY") or None
+    api_key = os.environ.get("INTENT_API_KEY")
+    if api_key is not None and not api_key.strip():
+        raise ValueError(
+            "INTENT_API_KEY is set but empty; set a key, or unset the variable "
+            "to run without authentication"
+        )
     if api_key is None:
         logger.warning(
             "INTENT_API_KEY is not set: the API is unauthenticated and spends provider "

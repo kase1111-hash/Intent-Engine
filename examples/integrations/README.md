@@ -57,7 +57,7 @@ INTENT_API_KEY=change-me \
     uvicorn --factory examples.integrations.rest_server:create_app_from_env
 ```
 
-`create_app_from_env()` builds the engine from `INTENT_STT_PROVIDER`, `INTENT_LLM_PROVIDER` and `INTENT_TTS_PROVIDER` (unset means the `IntentEngine` defaults) and reads the API key from `INTENT_API_KEY`. To configure things in code, build the app yourself (`uvicorn your_module:app`):
+`create_app_from_env()` builds the engine from `INTENT_STT_PROVIDER`, `INTENT_LLM_PROVIDER` and `INTENT_TTS_PROVIDER` (unset means the `IntentEngine` defaults) and reads the API key from `INTENT_API_KEY`. An `INTENT_API_KEY` that is set but empty (what `INTENT_API_KEY=${INTENT_API_KEY}` expands to when the variable is undefined) is a startup error, not "no authentication": unset the variable to run without a key. To configure things in code, build the app yourself (`uvicorn your_module:app`):
 
 ```python
 from examples.integrations.rest_server import create_app
@@ -74,14 +74,14 @@ curl -H "X-API-Key: change-me" -F audio=@clip.wav http://127.0.0.1:8000/process
 
 | Status | When |
 |--------|------|
-| 401 | Missing or wrong `X-API-Key` (when a key is configured; `/health` is the only open path, so `/docs` needs the header too) |
-| 413 | Request body over the limit (`max_upload_bytes`, default 25 MiB, for audio; a few MB of JSON) |
-| 415 | The upload is not WAV, AIFF, FLAC, MP3, Ogg, WebM or M4A (detected from the content, not the file name) |
-| 422 | Empty upload, audio that cannot be decoded, invalid IML, or a text field that is empty/too long |
-| 502 | The STT, LLM or TTS provider failed |
+| 401 | Missing or wrong `X-API-Key` (when a key is configured; `/health` is the only open path, so `/docs` needs the header too. Behind a path prefix (`uvicorn --root-path /api`) `/health` is the route the prefix leads to, `/api/health`) |
+| 413 | Request body over the limit: `max_upload_bytes` (default 25 MiB) for the audio upload to `/process`, a few MB for the JSON of every other endpoint, whatever `Content-Type` the request claims |
+| 415 | The upload is not WAV, AIFF, FLAC, MP3, Ogg, WebM or M4A (detected from the first bytes of the content, not the file name) |
+| 422 | Empty upload, invalid IML, or a text field that is empty/too long |
+| 502 | The STT, LLM or TTS provider failed, including an STT provider that cannot decode an upload whose first bytes look like audio |
 | 500 | Anything else |
 
-Error responses never contain exception text (which can hold temp paths, provider URLs or key fragments); they quote an `error id` that is logged next to the real cause. `/process` returns `emotion: "neutral"` with `confidence: 0.0` when the engine reported no emotion.
+Error responses never contain exception text (which can hold temp paths, provider URLs or key fragments); they quote an `error id` that is logged next to the real cause. `/process` returns `emotion: "neutral"` with `confidence: 0.0` when the engine reported no emotion. Audio that the STT provider transcribes but the prosody analysis cannot read (too short, corrupt) is answered with the transcript and no prosody, not with an error.
 
 ## Twilio
 
@@ -95,7 +95,8 @@ twiml = await handler.handle_voice(form["RecordingUrl"], form)
 ```
 
 - Validate `X-Twilio-Signature` on every request. `handle_voice` trusts the recording URL; the default download only accepts `https://*.twilio.com` and at most 25 MiB.
-- The reply is spoken with Twilio's `<Say>` voice. `IntentEngine` returns audio bytes, never a URL, and `<Play>` needs a URL, so to play the engine's emotion-mapped TTS voice pass `audio_publisher=`, an async function that stores an `Audio` somewhere Twilio can fetch and returns its URL (for example a route in your own app that serves the bytes). Without a publisher TTS is not called at all.
+- `validate_twilio_signature` returns `False` for a wrong, missing (`None`) or malformed signature or URL. It raises `ValueError` when the auth token is empty (say, `TWILIO_AUTH_TOKEN` unset): a signature made with an empty key can be computed by anyone, so this is a configuration error, not a check that passes.
+- The reply is spoken with Twilio's `<Say>` voice. `IntentEngine` returns audio bytes, never a URL, and `<Play>` needs a URL, so to play the engine's emotion-mapped TTS voice pass `audio_publisher=`, an async function that stores an `Audio` somewhere Twilio can fetch and returns its URL (for example a route in your own app that serves the bytes). Without a publisher TTS is not called at all. The reply is spoken with `reply_emotion` (default `"neutral"`), never in the caller's own tone: `Result.suggested_tone` describes the caller, and the canned replies are not an LLM `Response`, so an angry caller's de-escalation reply is not delivered in an angry voice.
 - If HTTP authentication for recording media is enabled in your Twilio console, pass a `download_func` that authenticates to `api.twilio.com`.
 
 ## Slack
@@ -110,7 +111,8 @@ message = await helper.process_audio_file(file_url, channel_id, user_id)
 client.chat_postMessage(**message)  # slack_sdk WebClient
 ```
 
-- The bot token is only ever sent to `https://*.slack.com`; other URLs are refused, and downloads are capped at 25 MiB.
+- The bot token is only ever sent to `https://*.slack.com`; other URLs are refused, and downloads are capped at 25 MiB (see [Downloads](#downloads)).
+- `verify_signature` returns `False` for a wrong, stale or malformed request. It raises `ValueError` when the signing secret is empty (say, `SLACK_SIGNING_SECRET` unset): `slack_sdk` before 3.43 would accept a signature forged with an empty key, so the example refuses on every version.
 - `handle_file_shared_event` needs the event to carry the file's `mimetype` and `url_private_download`. If the `file_shared` payload you receive holds only the file ID, call `files.info` and pass the enriched event. (Not verified against Slack's current event schema when this example was fixed; check yours.)
 - Messages are cut to Slack's 3000 character block limit and `&`, `<`, `>` in transcripts are escaped, so a transcript cannot notify a channel.
 
@@ -124,6 +126,12 @@ await message.channel.send(**payload)
 ```
 
 `payload` holds `send()` keyword arguments: `content` (cut to 2000 characters), `embed` (a `discord.Embed`) when an emotion was reported, and `allowed_mentions`, which switches every mention notification off so an `@everyone` in a name or transcript cannot ping the server. Attachments are only downloaded from `cdn.discordapp.com` / `media.discordapp.net`.
+
+## Downloads
+
+Recordings and attachments are fetched by `download_media` in `_common.py`: `https` only, from the allow-listed hosts only, without following redirects, at most 25 MiB, and within 120 seconds in total (a host that sends a byte at a time cannot hold a connection open). It asks for an unencoded body and refuses a response that has a `Content-Encoding`, because the size cap counts decoded bytes and a small gzip body can decode to far more than the cap. Recordings are not sent compressed, so this costs nothing; a custom `download_func` is responsible for its own limits.
+
+Signed CDN links (Discord's `ex`/`is`/`hm` query) are credentials. A failed download is logged with its HTTP status and host only, never the URL. `httpx` itself logs every request URL at `INFO`, so a deployment that handles such links should keep `logging.getLogger("httpx").setLevel(logging.WARNING)`; the examples do not change global logging.
 
 ## Emotion is optional
 
