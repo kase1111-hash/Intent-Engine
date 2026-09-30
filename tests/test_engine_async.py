@@ -362,12 +362,17 @@ class TestBlockingWorkLeavesTheLoop:
         assert set(seen) == {"analyze", "pauses", "hash"}
         assert all(ident != loop_thread for ident in seen.values())
 
-    def test_the_loop_keeps_running_during_slow_analysis(self, tmp_path: Path) -> None:
+    def test_the_loop_keeps_running_during_slow_gil_releasing_analysis(
+        self, tmp_path: Path
+    ) -> None:
+        # Only work that releases the GIL (reading and decoding audio, numpy)
+        # leaves the loop free; Praat holds the GIL, so real analysis still
+        # stalls the loop for part of its duration (see process_voice_input).
         engine = _engine()
         features = engine._analyzer.analyze.return_value
 
         def slow_analyze(path: str, alignments: Any) -> Any:
-            time.sleep(0.6)  # releases the GIL, like reading and decoding audio
+            time.sleep(0.6)  # releases the GIL
             return features
 
         engine._analyzer.analyze = slow_analyze

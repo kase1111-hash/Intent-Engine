@@ -225,6 +225,106 @@ class TestCachedResultsAreIndependent:
 
         assert _run(engine, path) == _run(engine, path)
 
+    def test_mutating_a_returned_pitch_contour_does_not_change_later_hits(
+        self, tmp_path: Path
+    ) -> None:
+        # SpanFeatures is frozen but holds its F0 contour in a plain list
+        engine = _engine()
+        path = _audio(tmp_path)
+
+        first = _run(engine, path)
+        original = [list(span.f0_contour or []) for span in first.prosody_features]
+        assert original and all(original)
+        for span in first.prosody_features:  # a caller scribbling on what it was given
+            assert span.f0_contour is not None
+            span.f0_contour.clear()
+
+        second = _run(engine, path)
+        assert [span.f0_contour for span in second.prosody_features] == original
+        assert second.prosody_features[0].f0_contour is not None
+        second.prosody_features[0].f0_contour.append(99999.0)  # ... and on a hit
+
+        third = _run(engine, path)
+        assert [span.f0_contour for span in third.prosody_features] == original
+        assert engine._stt.transcribe.call_count == 1
+
+    def test_hits_do_not_share_span_objects_with_each_other(self, tmp_path: Path) -> None:
+        engine = _engine()
+        path = _audio(tmp_path)
+
+        _run(engine, path)
+        second = _run(engine, path)
+        third = _run(engine, path)
+
+        assert second.prosody_features[0] is not third.prosody_features[0]
+        assert second.prosody_features[0] == third.prosody_features[0]
+
+
+class TestClearCacheDuringACall:
+    """clear_cache() drops transcripts and emotion: not the ones still being computed."""
+
+    @staticmethod
+    def _gated(engine: IntentEngine, started: asyncio.Event, proceed: asyncio.Event) -> None:
+        alignments, _ = make_flat_speech()
+
+        async def transcribe(path: str) -> TranscriptionResult:
+            started.set()
+            await proceed.wait()
+            return TranscriptionResult(
+                text="I am fine thank you today.", alignments=alignments, language="en"
+            )
+
+        engine._stt.transcribe = transcribe
+
+    def test_a_call_in_flight_when_the_cache_is_cleared_is_not_cached(
+        self, tmp_path: Path
+    ) -> None:
+        engine = _engine()
+        path = _audio(tmp_path)
+
+        async def main() -> Result:
+            started, proceed = asyncio.Event(), asyncio.Event()
+            self._gated(engine, started, proceed)
+            task = asyncio.create_task(engine.process_voice_input(path))
+            await started.wait()
+            engine.clear_cache()
+            proceed.set()
+            return await task
+
+        result = asyncio.run(main())
+
+        assert result.text == "I am fine thank you today."  # the caller still gets its result
+        assert len(engine._cache) == 0
+
+    def test_a_call_started_after_the_clear_is_cached_again(self, tmp_path: Path) -> None:
+        engine = _engine()
+        path = _audio(tmp_path)
+        _run(engine, path)
+
+        engine.clear_cache()
+        _run(engine, path)
+
+        assert len(engine._cache) == 1
+        assert engine._stt.transcribe.call_count == 2
+
+    def test_clearing_twice_during_one_call_still_skips_it(self, tmp_path: Path) -> None:
+        engine = _engine()
+        path = _audio(tmp_path)
+
+        async def main() -> None:
+            started, proceed = asyncio.Event(), asyncio.Event()
+            self._gated(engine, started, proceed)
+            task = asyncio.create_task(engine.process_voice_input(path))
+            await started.wait()
+            engine.clear_cache()
+            engine.clear_cache()
+            proceed.set()
+            await task
+
+        asyncio.run(main())
+
+        assert len(engine._cache) == 0
+
 
 @pytest.fixture()
 def fast_thread_switching() -> Iterator[None]:

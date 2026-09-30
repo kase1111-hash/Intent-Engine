@@ -122,7 +122,12 @@ class ConstitutionalFilter:
             List of ``SpanFeatures`` from the pipeline.
         emotion:
             The detected emotion label from the IML utterance, compared
-            case-insensitively.
+            case-insensitively.  Without ``emotion_confidence`` the label is
+            taken at face value: passing only ``Result.emotion`` reads the
+            ``("neutral", 0.0)`` of "no emotion reported" as a measured
+            neutral speaker, which passes a rule that lists ``neutral`` as
+            acceptable.  When gating on a ``Result``, use
+            ``IntentEngine.evaluate_result``.
         context:
             Optional context dict (e.g., ``{"user_id": "...", "session_risk": "low"}``).
             Accepted for forward compatibility; rules do not use it yet.

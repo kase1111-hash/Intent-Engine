@@ -19,8 +19,8 @@ SAMPLE_RULES_PATH = Path(__file__).parent / "sample_rules.yaml"
 
 class TestProsodyCondition:
     def test_default_values(self) -> None:
-        cond = ProsodyCondition()
-        assert cond.emotion == ()
+        cond = ProsodyCondition(emotion=["calm"])
+        assert cond.emotion == ("calm",)
         assert cond.pitch_variance is None
         assert cond.speaking_rate is None
 
@@ -35,7 +35,7 @@ class TestProsodyCondition:
         assert cond.speaking_rate == (2.0, 5.0)
 
     def test_frozen(self) -> None:
-        cond = ProsodyCondition()
+        cond = ProsodyCondition(emotion=["calm"])
         with pytest.raises(AttributeError):
             cond.pitch_variance = "high"  # type: ignore[misc]
 

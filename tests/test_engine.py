@@ -383,7 +383,7 @@ class TestGenerateResponse:
         assert (result.text, result.emotion) == ("Are you sure?", "calm")
 
     def test_intent_feeds_the_constitutional_filter(self) -> None:
-        # the documented flow: LLM intent -> evaluate_intent(..., emotion=result.emotion)
+        # the documented flow: LLM intent -> evaluate_result(response.intent, result)
         llm_mock = MagicMock()
         llm_mock.interpret = AsyncMock(
             return_value=InterpretationResult(
@@ -398,9 +398,16 @@ class TestGenerateResponse:
         engine = _create_engine(llm_mock=llm_mock, constitutional_rules=rules_path)
 
         response = asyncio.run(engine.generate_response("<iml/>"))
-        decision = engine.evaluate_intent(
-            response.intent, [_make_features()], emotion="sarcastic"
+        turn = Result(
+            text="Delete my account",
+            emotion="sarcastic",
+            confidence=0.9,
+            iml="<iml/>",
+            iml_document=_make_iml_doc("sarcastic", 0.9),
+            suggested_tone="sarcastic",
+            prosody_features=[_make_features()],
         )
+        decision = engine.evaluate_result(response.intent, turn)
 
         assert decision.allow is False
 

@@ -9,9 +9,15 @@ runs locally by default.
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import Any
 
-from intent_engine._deployment import is_local_llm, llm_kwargs_with_model
+from intent_engine._deployment import (
+    is_local_llm,
+    llama_cpp_model_file,
+    llm_kwargs_with_model,
+)
 from intent_engine.engine import IntentEngine
 
 logger = logging.getLogger(__name__)
@@ -60,6 +66,11 @@ class HybridEngine(IntentEngine):
         Additional keyword arguments for the LLM adapter.
     tts_kwargs:
         Additional keyword arguments for the TTS adapter.
+    validate_models:
+        If ``True`` (default), raise ``FileNotFoundError`` when the llama.cpp
+        model file (``llm_model``, or a ``model_path`` in ``llm_kwargs``)
+        does not exist; a leading ``~`` is the home directory.  Model names
+        for a server or a cloud provider are not files and are not checked.
     """
 
     def __init__(
@@ -68,15 +79,22 @@ class HybridEngine(IntentEngine):
         llm_provider: str = _HYBRID_DEFAULTS["llm_provider"],
         tts_provider: str = _HYBRID_DEFAULTS["tts_provider"],
         llm_model: str | None = None,
-        constitutional_rules: str | None = None,
-        prosody_profile: str | None = None,
+        constitutional_rules: str | os.PathLike[str] | None = None,
+        prosody_profile: str | os.PathLike[str] | None = None,
         cache_size: int = 128,
         stt_kwargs: dict[str, Any] | None = None,
         llm_kwargs: dict[str, Any] | None = None,
         tts_kwargs: dict[str, Any] | None = None,
+        validate_models: bool = True,
     ) -> None:
         # Hand the model to the parameter the LLM provider really takes
         llm_kw = llm_kwargs_with_model(llm_provider, llm_model, llm_kwargs)
+
+        # Fail before any cloud STT is paid for: a llama.cpp file that is not there
+        model_file = llama_cpp_model_file(llm_provider, llm_kw)
+        if validate_models and model_file is not None and not Path(model_file).exists():
+            source = "llm_model" if llm_model else "llm_kwargs model_path"
+            raise FileNotFoundError(f"{source} path does not exist: {model_file}")
 
         super().__init__(
             stt_provider=stt_provider,

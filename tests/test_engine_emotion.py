@@ -90,9 +90,7 @@ class TestResultMatchesIML:
         )
 
         result = asyncio.run(engine.process_voice_input(str(wav), use_cache=False))
-        decision = engine.evaluate_intent(
-            "delete_files", result.prosody_features, emotion=result.emotion
-        )
+        decision = engine.evaluate_result("delete_files", result)
 
         assert decision.allow is False
 

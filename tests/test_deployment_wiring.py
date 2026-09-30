@@ -13,9 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from intent_engine._deployment import is_local_url, is_model_file
+from intent_engine._deployment import is_local_url, is_model_file, llm_kwargs_with_model
 from intent_engine.hybrid_engine import HybridEngine
 from intent_engine.local_engine import LocalEngine
+from tests.conftest import create_mocked_engine
 
 FAKE_KEY = {"api_key": "not-a-real-key"}
 
@@ -284,3 +285,182 @@ class TestPathAndUrlClassification:
     @pytest.mark.parametrize("url", ["http://169.254.1.1/v1", "http://[fd00::1]:80/v1"])
     def test_link_local_and_unique_local_addresses_are_local(self, url: str) -> None:
         assert is_local_url(url)
+
+
+class TestNumericHostsAreReadAsAddresses:
+    """The resolver reads a lone number (decimal, hex, octal) as an IPv4 address."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://134744072/v1",  # 8.8.8.8
+            "http://0x08080808/v1",  # 8.8.8.8
+            "http://010002004010/v1",  # 64.8.8.8
+            "http://8.8.8/v1",  # short dotted form: 8.8.0.8
+            "http://0x8.0x8.0x8.0x8/v1",
+        ],
+    )
+    def test_public_addresses_in_unusual_notation_are_not_local(self, url: str) -> None:
+        assert not is_local_url(url)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://2130706433/v1",  # 127.0.0.1
+            "http://0x7f000001/v1",  # 127.0.0.1
+            "http://3232235521/v1",  # 192.168.0.1
+            "http://127.1/v1",
+            "http://10.1/v1",
+            "http://0177.0.0.1/v1",
+        ],
+    )
+    def test_private_addresses_in_unusual_notation_are_local(self, url: str) -> None:
+        assert is_local_url(url)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://ollama/v1",
+            "http://my-service:8000/v1",
+            "http://db2/v1",
+            "http://12abc/v1",
+            "http://deadbeef/v1",
+            "http://0xg/v1",
+            "http://a1/v1",
+        ],
+    )
+    def test_service_names_stay_local(self, url: str) -> None:
+        assert is_local_url(url)
+
+    def test_the_engines_do_not_call_a_public_number_local(self) -> None:
+        llm = {"base_url": "http://134744072/v1"}
+
+        assert LocalEngine(llm_model="llama3", llm_kwargs=llm).is_fully_local is False
+        assert HybridEngine(stt_kwargs=FAKE_KEY, llm_kwargs=llm).is_llm_local is False
+
+
+@pytest.fixture()
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A home directory holding ``models/m.gguf`` and ``w.pt``."""
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "m.gguf").write_bytes(b"GGUF")
+    (tmp_path / "w.pt").write_bytes(b"pt")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    return tmp_path
+
+
+class TestHomeDirectoryPaths:
+    def test_a_tilde_llm_path_is_expanded_for_the_check_and_for_llama_cpp(
+        self, home: Path
+    ) -> None:
+        engine = LocalEngine(llm_model="~/models/m.gguf")
+
+        assert engine._llm._model_path == str(home / "models" / "m.gguf")
+        assert engine.llm_model == "~/models/m.gguf"  # what the caller gave
+
+    def test_a_tilde_stt_path_reaches_whisper_expanded(self, home: Path) -> None:
+        engine = LocalEngine(stt_model="~/w.pt", llm_kwargs={"base_url": "http://127.0.0.1:1/v1"})
+
+        assert engine._stt._model_size == str(home / "w.pt")
+
+    def test_a_tilde_model_path_in_llm_kwargs_is_expanded(self, home: Path) -> None:
+        engine = LocalEngine(llm_kwargs={"model_path": "~/models/m.gguf"})
+
+        assert engine._llm._model_path == str(home / "models" / "m.gguf")
+
+    def test_hybrid_expands_it_too(self, home: Path) -> None:
+        engine = HybridEngine(stt_kwargs=FAKE_KEY, llm_model="~/models/m.gguf")
+
+        assert engine._llm._model_path == str(home / "models" / "m.gguf")
+
+    def test_a_missing_file_under_home_is_still_reported(self, home: Path) -> None:
+        with pytest.raises(FileNotFoundError, match="llm_model"):
+            LocalEngine(llm_model="~/models/nope.gguf")
+
+    def test_a_server_model_name_is_not_expanded(self) -> None:
+        kw = llm_kwargs_with_model("local", "~odd", {"base_url": "http://127.0.0.1:1/v1"})
+
+        assert kw["model"] == "~odd"
+
+
+class TestUnknownProviderWithAModel:
+    def test_local_engine_reports_the_unknown_provider(self) -> None:
+        local = {"base_url": "http://127.0.0.1:1/v1"}
+        with pytest.raises(ValueError, match="Unknown STT provider"):
+            LocalEngine(stt_provider="bogus", stt_model="x", llm_kwargs=local)
+        with pytest.raises(ValueError, match="Unknown LLM provider"):
+            LocalEngine(llm_provider="bogus", llm_model="x")
+        with pytest.raises(ValueError, match="Unknown TTS provider"):
+            LocalEngine(tts_provider="bogus", tts_model="x", llm_kwargs=local)
+
+    def test_hybrid_engine_reports_the_unknown_provider(self) -> None:
+        with pytest.raises(ValueError, match="Unknown LLM provider"):
+            HybridEngine(stt_kwargs=FAKE_KEY, llm_provider="bogus", llm_model="x")
+
+    def test_a_known_provider_without_models_still_says_so(self) -> None:
+        with pytest.raises(ValueError, match="not supported"):
+            LocalEngine(tts_model="coqui-tts-v1", llm_kwargs={"base_url": "http://127.0.0.1:1/v1"})
+
+
+class TestFailFast:
+    def test_a_missing_llama_cpp_file_given_in_llm_kwargs_is_reported(self) -> None:
+        with pytest.raises(FileNotFoundError, match="model_path"):
+            LocalEngine(llm_kwargs={"model_path": "/nonexistent/x.gguf"})
+
+    def test_the_check_can_be_switched_off(self) -> None:
+        engine = LocalEngine(
+            llm_kwargs={"model_path": "/nonexistent/x.gguf"}, validate_models=False
+        )
+
+        assert engine._llm._model_path == "/nonexistent/x.gguf"
+
+    def test_llm_model_wins_over_a_stale_model_path_in_llm_kwargs(self, gguf: str) -> None:
+        engine = LocalEngine(llm_model=gguf, llm_kwargs={"model_path": "/nonexistent/old.gguf"})
+
+        assert engine._llm._model_path == gguf
+
+    def test_a_server_url_makes_model_path_irrelevant(self) -> None:
+        LocalEngine(
+            llm_kwargs={"base_url": "http://127.0.0.1:1/v1", "model_path": "/nonexistent/x.gguf"}
+        )
+
+    def test_hybrid_reports_a_missing_llama_cpp_file(self) -> None:
+        with pytest.raises(FileNotFoundError, match="llm_model"):
+            HybridEngine(stt_kwargs=FAKE_KEY, llm_model="/nonexistent/x.gguf")
+        with pytest.raises(FileNotFoundError, match="model_path"):
+            HybridEngine(stt_kwargs=FAKE_KEY, llm_kwargs={"model_path": "/nonexistent/x.gguf"})
+
+    def test_hybrid_check_can_be_switched_off(self) -> None:
+        engine = HybridEngine(
+            stt_kwargs=FAKE_KEY, llm_model="/nonexistent/x.gguf", validate_models=False
+        )
+
+        assert engine.llm_model == "/nonexistent/x.gguf"
+
+    def test_hybrid_does_not_check_a_cloud_model_id_or_a_server_model(self) -> None:
+        HybridEngine(
+            stt_kwargs=FAKE_KEY,
+            llm_provider="claude",
+            llm_model="a-cloud-model.bin",
+            llm_kwargs=FAKE_KEY,
+        )
+        HybridEngine(
+            stt_kwargs=FAKE_KEY,
+            llm_model="llama3",
+            llm_kwargs={"base_url": "http://localhost:11434/v1"},
+        )
+
+    @pytest.mark.parametrize("size", [None, "5", 2.5, [8]])
+    def test_cache_size_must_be_an_integer(self, size: object) -> None:
+        with pytest.raises(TypeError, match="cache_size"):
+            create_mocked_engine(cache_size=size)
+
+    def test_integer_like_cache_sizes_are_accepted(self) -> None:
+        class Size:
+            def __index__(self) -> int:
+                return 4
+
+        assert create_mocked_engine(cache_size=Size())._cache_size == 4
+        assert create_mocked_engine(cache_size=0)._cache_size == 0
+        assert create_mocked_engine(cache_size=-1)._cache_size == -1

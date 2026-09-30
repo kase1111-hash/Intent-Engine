@@ -9,14 +9,17 @@ at construction time.  All ``prosody_protocol`` components
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
 from intent_engine._deployment import (
     LOCAL_STT_PROVIDERS,
     LOCAL_TTS_PROVIDERS,
+    expand_model_path,
     is_local_llm,
     is_model_file,
+    llama_cpp_model_file,
     llm_kwargs_with_model,
     stt_kwargs_with_model,
     tts_kwargs_with_model,
@@ -80,7 +83,10 @@ class LocalEngine(IntentEngine):
     validate_models:
         If ``True`` (default), raise ``FileNotFoundError`` when
         a model file (a path, or a name ending in ``.gguf``, ``.pt``, ...)
-        does not exist on disk.
+        does not exist on disk.  That covers ``stt_model``, ``llm_model``,
+        ``tts_model`` and a ``model_path`` given in ``llm_kwargs``; a
+        leading ``~`` is the home directory.  A Whisper size that Whisper does
+        not know is only found out when the model is first loaded.
     stt_kwargs:
         Additional keyword arguments for the STT adapter.
     llm_kwargs:
@@ -98,8 +104,8 @@ class LocalEngine(IntentEngine):
         tts_provider: str = _LOCAL_DEFAULTS["tts_provider"],
         tts_model: str | None = None,
         prosody_model: str | None = None,
-        constitutional_rules: str | None = None,
-        prosody_profile: str | None = None,
+        constitutional_rules: str | os.PathLike[str] | None = None,
+        prosody_profile: str | os.PathLike[str] | None = None,
         cache_size: int = 128,
         validate_models: bool = True,
         stt_kwargs: dict[str, Any] | None = None,
@@ -118,6 +124,12 @@ class LocalEngine(IntentEngine):
         stt_kw = stt_kwargs_with_model(stt_provider, stt_model, stt_kwargs)
         llm_kw = llm_kwargs_with_model(llm_provider, llm_model, llm_kwargs)
         tts_kw = tts_kwargs_with_model(tts_provider, tts_model, tts_kwargs)
+
+        # A llama.cpp file that came in through llm_kwargs (llm_model, when
+        # given, has replaced it above and was checked already)
+        model_file = llama_cpp_model_file(llm_provider, llm_kw)
+        if validate_models and model_file is not None and not Path(model_file).exists():
+            raise FileNotFoundError(f"llm_kwargs model_path does not exist: {model_file}")
 
         super().__init__(
             stt_provider=stt_provider,
@@ -169,9 +181,10 @@ class LocalEngine(IntentEngine):
         """Validate that model files exist on disk.
 
         Only checks values that are files: absolute or explicitly relative
-        paths, and names ending in a model extension (``.gguf``, ``.pt``,
-        ...).  Model names and ids such as ``"large-v3"`` or Coqui's
-        ``"tts_models/en/vctk/vits"`` are not validated.
+        paths (``~`` is the home directory), and names ending in a model
+        extension (``.gguf``, ``.pt``, ...).  Model names and ids such as
+        ``"large-v3"`` or Coqui's ``"tts_models/en/vctk/vits"`` are not
+        validated.
         """
         for label, path in [
             ("stt_model", stt_model),
@@ -180,7 +193,7 @@ class LocalEngine(IntentEngine):
         ]:
             if path is None:
                 continue
-            if is_model_file(path) and not Path(path).exists():
+            if is_model_file(path) and not Path(expand_model_path(path)).exists():
                 raise FileNotFoundError(
                     f"{label} path does not exist: {path}"
                 )

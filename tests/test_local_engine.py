@@ -334,3 +334,20 @@ class TestTopLevelImports:
         import intent_engine
         for name in ["HybridEngine", "LocalEngine"]:
             assert name in intent_engine.__all__, f"Missing export: {name}"
+
+
+class TestSafetyPathOptions:
+    """The rules and profile paths are forwarded to the base engine unchanged."""
+
+    RULES = Path(__file__).parent / "constitutional" / "sample_rules.yaml"
+
+    def test_a_pathlib_rules_path_builds_the_filter(self) -> None:
+        assert _create_local(constitutional_rules=self.RULES)._filter is not None
+
+    def test_an_empty_rules_path_is_an_error(self) -> None:
+        with pytest.raises(ValueError, match="constitutional_rules"):
+            _create_local(constitutional_rules="")
+
+    def test_an_empty_profile_path_is_an_error(self) -> None:
+        with pytest.raises(ValueError, match="prosody_profile"):
+            _create_local(prosody_profile="")

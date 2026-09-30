@@ -8,13 +8,17 @@ high-pitched speakers out of ``pitch_variance: low`` for ordinary intonation.
 from __future__ import annotations
 
 import math
+import random
 from pathlib import Path
 
 import pytest
 from prosody_protocol import SpanFeatures
 
+from intent_engine.constitutional import evaluator
 from intent_engine.constitutional.evaluator import (
+    _MIN_CONTOUR_SAMPLES,
     PITCH_VARIANCE_THRESHOLDS,
+    _span_pitch_spread,
     check_required_prosody,
 )
 from intent_engine.constitutional.rules import PITCH_VARIANCE_LEVELS, ProsodyCondition
@@ -115,6 +119,81 @@ class TestMeasure:
         assert reason is not None
         assert "semitones" in reason
         assert "Hz" not in reason
+
+
+def _spread(contour: list[float], f0_range: tuple[float, float] | None = None) -> float:
+    span = SpanFeatures(0, 10 * len(contour), "w", f0_range=f0_range, f0_contour=contour)
+    spread = _span_pitch_spread(span)
+    assert spread is not None
+    return spread
+
+
+def _full_range_semitones(contour: list[float]) -> float:
+    return 12.0 * math.log2(max(contour) / min(contour))
+
+
+class TestShortContours:
+    """Percentiles of a handful of samples must stay inside the observed data.
+
+    ``statistics.quantiles`` extrapolates beyond the minimum and maximum by
+    default ("exclusive" method), which made a five-sample contour look livelier
+    than its full min-max range and could put a negative pitch into the log.
+    """
+
+    def test_the_spread_never_exceeds_the_observed_range(self) -> None:
+        rng = random.Random(7)
+        for size in range(_MIN_CONTOUR_SAMPLES, 13):
+            for _ in range(300):
+                contour = [round(rng.uniform(80.0, 400.0), 1) for _ in range(size)]
+                assert _spread(contour) <= _full_range_semitones(contour) + 1e-9, (size, contour)
+
+    def test_last_sample_of_a_flat_contour_is_partly_ignored(self) -> None:
+        # min-max is 3.16 st; the extrapolating estimator reported 4.27 st
+        assert _spread([100.0, 100.0, 100.0, 100.0, 120.0]) == pytest.approx(1.96, abs=0.01)
+
+    @pytest.mark.parametrize("contour", [
+        [80.0, 300.0, 300.0, 300.0, 300.0],
+        [300.0, 80.0, 300.0, 300.0, 300.0, 300.0],
+        [50.0, 350.0, 350.0, 350.0, 350.0, 350.0, 350.0, 350.0],
+    ])
+    def test_a_very_low_first_sample_cannot_crash_the_evaluation(
+        self, contour: list[float]
+    ) -> None:
+        # the extrapolated lower decile went negative: math domain error
+        assert 0.0 <= _spread(contour) <= _full_range_semitones(contour)
+        word = SpanFeatures(0, 60, "w", f0_contour=contour)
+        for level in PITCH_VARIANCE_LEVELS:
+            check_required_prosody(ProsodyCondition(pitch_variance=level), [word])
+
+    def test_a_lone_stray_sample_is_ignored_from_eleven_samples(self) -> None:
+        for size in (11, 12, 20, 40):
+            assert _spread([120.0] * (size - 1) + [240.0]) == 0.0, size
+
+    @pytest.mark.parametrize("size", range(_MIN_CONTOUR_SAMPLES, 11))
+    def test_a_lone_stray_sample_is_damped_in_shorter_contours(self, size: int) -> None:
+        # not ignored (there is too little data), but bounded by the data range
+        spread = _spread([120.0] * (size - 1) + [240.0])
+        assert spread < 12.0
+
+    def test_a_stray_sample_in_ten_samples_still_reads_as_low(self) -> None:
+        contour = [120.0] * 9 + [240.0]
+        word = SpanFeatures(0, 100, "w", f0_range=(120.0, 240.0), f0_contour=contour)
+        assert _passes("low", [word])
+
+    def test_degenerate_percentile_bounds_fall_back_to_the_f0_range(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(evaluator.statistics, "quantiles", lambda *a, **k: [-5.0] * 9)
+        contour = [200.0, 210.0, 220.0, 230.0, 240.0, 250.0]
+        assert _spread(contour, f0_range=(200.0, 250.0)) == pytest.approx(
+            12.0 * math.log2(250.0 / 200.0)
+        )
+        monkeypatch.setattr(evaluator.statistics, "quantiles", lambda *a, **k: [0.0] * 9)
+        assert _span_pitch_spread(SpanFeatures(0, 60, "w", f0_contour=contour)) is None
+
+    def test_non_positive_and_non_finite_samples_are_dropped(self) -> None:
+        contour = [200.0, -1.0, float("nan"), 0.0, float("inf"), 210.0, 205.0, 215.0, 220.0]
+        assert _spread(contour) == pytest.approx(_spread([200.0, 210.0, 205.0, 215.0, 220.0]))
 
 
 class TestThresholds:

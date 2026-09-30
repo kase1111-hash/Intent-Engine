@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import hashlib
 import logging
+import operator
 import os
 import threading
 import weakref
@@ -42,6 +43,7 @@ from prosody_protocol import (
     WordAlignment,
 )
 
+from intent_engine.constitutional.evaluator import most_restrictive, resolve_emotion
 from intent_engine.constitutional.filter import ConstitutionalFilter
 from intent_engine.errors import IntentEngineError, LLMError, STTError, TTSError
 from intent_engine.llm import LLMProvider, create_llm_provider
@@ -58,6 +60,31 @@ _P = ParamSpec("_P")
 _T = TypeVar("_T")
 
 
+def _path_option(name: str, value: object, what: str, none_means: str) -> str:
+    """Return a path-valued constructor option as a string, or raise if it is unusable.
+
+    ``None`` (the option is unset) is handled by the caller.  An empty string
+    is an error rather than "unset": an unset environment variable expands to
+    ``""``, and silently running without a safety filter or an accessibility
+    profile beats nothing.
+    """
+    if isinstance(value, str):
+        if not value.strip():
+            raise ValueError(
+                f"{name} must be a path to {what}, not an empty string "
+                f"(pass None {none_means})"
+            )
+        return value
+    if isinstance(value, os.PathLike):
+        path = os.fspath(value)
+        if isinstance(path, str):
+            return path
+    raise TypeError(
+        f"{name} must be a str or os.PathLike path to {what} (or None {none_means}), "
+        f"got {type(value).__name__}"
+    )
+
+
 class _LoopThread:
     """An event loop running in a daemon thread, for the ``*_sync`` wrappers.
 
@@ -70,6 +97,7 @@ class _LoopThread:
     def __init__(self, owner: object) -> None:
         self.pid = os.getpid()
         self.loop = asyncio.new_event_loop()
+        self._stopping = threading.Event()
         self.thread = threading.Thread(
             target=self._run, name="intent-engine-sync", daemon=True
         )
@@ -79,7 +107,15 @@ class _LoopThread:
     def _run(self) -> None:
         asyncio.set_event_loop(self.loop)
         try:
-            self.loop.run_forever()
+            while not self._stopping.is_set():
+                try:
+                    self.loop.run_forever()
+                except (KeyboardInterrupt, SystemExit):
+                    # A provider coroutine raised it: asyncio has already set it
+                    # on that call's task, so the caller of the *_sync wrapper
+                    # receives it.  It must not end the loop the other calls
+                    # (and later ones) share.
+                    continue
         finally:
             pending = asyncio.all_tasks(self.loop)
             for task in pending:
@@ -89,6 +125,7 @@ class _LoopThread:
             self.loop.close()
 
     def _request_stop(self) -> None:
+        self._stopping.set()
         with contextlib.suppress(RuntimeError):  # the loop is already closed
             self.loop.call_soon_threadsafe(self.loop.stop)
 
@@ -121,14 +158,18 @@ class IntentEngine:
     tts_provider:
         TTS provider name (``"elevenlabs"``, ``"coqui"``, ``"espeak"``).
     constitutional_rules:
-        Optional path to a YAML file with constitutional rules.
+        Optional path (``str`` or ``pathlib.Path``) to a YAML file with
+        constitutional rules.  ``None`` runs without the filter; an empty
+        string is a ``ValueError`` (an unset environment variable must not
+        silently disable it), and any other type a ``TypeError``.
     prosody_profile:
-        Optional path to a prosody profile JSON for atypical
-        prosody handling.  The profile is validated when the engine is
-        created (``ProfileError`` if it is invalid).
+        Optional path (``str`` or ``pathlib.Path``) to a prosody profile
+        JSON for atypical prosody handling.  The profile is validated when
+        the engine is created (``ProfileError`` if it is invalid).  An empty
+        string is a ``ValueError``, as for ``constitutional_rules``.
     cache_size:
-        Maximum number of audio results to cache (LRU); ``0`` or less
-        disables caching.  Results are cached per audio content and active
+        Maximum number of audio results to cache (LRU), an integer; ``0`` or
+        less disables caching.  Results are cached per audio content and active
         prosody profile.  They hold transcripts and detected emotion, so
         call :meth:`clear_cache` when they should not be kept.
     stt_kwargs:
@@ -144,8 +185,8 @@ class IntentEngine:
         stt_provider: str = "whisper-prosody",
         llm_provider: str = "claude",
         tts_provider: str = "elevenlabs",
-        constitutional_rules: str | None = None,
-        prosody_profile: str | None = None,
+        constitutional_rules: str | os.PathLike[str] | None = None,
+        prosody_profile: str | os.PathLike[str] | None = None,
         cache_size: int = 128,
         stt_kwargs: dict[str, Any] | None = None,
         llm_kwargs: dict[str, Any] | None = None,
@@ -179,21 +220,29 @@ class IntentEngine:
         # Optional constitutional filter
         self._filter: ConstitutionalFilter | None = None
         if constitutional_rules is not None:
-            if not constitutional_rules.strip():
-                # An unset environment variable expands to "": failing here
-                # beats running without the safety filter.
-                raise ValueError(
-                    "constitutional_rules must be a path to a YAML rules file, "
-                    "not an empty string (pass None to run without the filter)"
+            self._filter = ConstitutionalFilter.from_yaml(
+                _path_option(
+                    "constitutional_rules",
+                    constitutional_rules,
+                    "a YAML rules file",
+                    "to run without the filter",
                 )
-            self._filter = ConstitutionalFilter.from_yaml(constitutional_rules)
+            )
 
         # Event loop of the *_sync wrappers, started on first use
         self._sync_runner: _LoopThread | None = None
 
         # LRU cache for audio processing results
-        self._cache_size = cache_size
+        try:
+            self._cache_size = operator.index(cache_size)
+        except TypeError:
+            raise TypeError(
+                f"cache_size must be an integer, got {type(cache_size).__name__}"
+            ) from None
         self._cache: OrderedDict[str, Result] = OrderedDict()
+        # Counts clear_cache() calls, so a call in flight at the time of a
+        # clear does not put its result back
+        self._cache_generation = 0
 
         # Profile loader (always available for the management API)
         self._profile_loader = ProfileLoader()
@@ -201,8 +250,17 @@ class IntentEngine:
         # Optional accessibility profile (loaded from path); it is handed to
         # the assembler, which applies it per utterance
         self._profile: ProsodyProfile | None = None
-        if prosody_profile:
-            self.set_profile(self.load_profile(prosody_profile))
+        if prosody_profile is not None:
+            self.set_profile(
+                self.load_profile(
+                    _path_option(
+                        "prosody_profile",
+                        prosody_profile,
+                        "a profile JSON file",
+                        "to run without a profile",
+                    )
+                )
+            )
 
         logger.info(
             "IntentEngine initialized (stt=%s, llm=%s, tts=%s, filter=%s, profile=%s)",
@@ -221,11 +279,17 @@ class IntentEngine:
                 self._cache.move_to_end(key)
             return cached
 
-    def _cache_put(self, key: str, result: Result) -> None:
-        """Store a result in the cache, evicting the oldest if full."""
+    def _cache_put(self, key: str, result: Result, generation: int | None = None) -> None:
+        """Store a result in the cache, evicting the oldest if full.
+
+        With *generation* (as read before the result was computed) the result
+        is dropped if :meth:`clear_cache` ran in the meantime.
+        """
         if self._cache_size <= 0:
             return
         with self._lock:
+            if generation is not None and generation != self._cache_generation:
+                return
             if key in self._cache:
                 self._cache.move_to_end(key)
             elif len(self._cache) >= self._cache_size:
@@ -236,10 +300,24 @@ class IntentEngine:
         """Drop all cached results.
 
         Cached results hold transcripts and detected emotion (personal
-        data); call this when they should not be kept.
+        data); call this when they should not be kept.  A call to
+        :meth:`process_voice_input` that is still running when this is called
+        returns its result to its caller but does not cache it.
         """
         with self._lock:
             self._cache.clear()
+            self._cache_generation += 1
+
+    @staticmethod
+    def _copy_features(features: list[SpanFeatures]) -> list[SpanFeatures]:
+        """Copies of *features* that share no mutable state with them.
+
+        ``SpanFeatures`` is frozen, but its ``f0_contour`` is a plain list.
+        """
+        return [
+            replace(f, f0_contour=None if f.f0_contour is None else list(f.f0_contour))
+            for f in features
+        ]
 
     @staticmethod
     def _audio_hash(audio_path: str) -> str:
@@ -285,6 +363,16 @@ class IntentEngine:
         (and whenever the IML carries no emotion) ``Result.emotion`` is
         ``"neutral"`` with confidence ``0.0``, which means "no emotion
         reported", not "measured neutral".
+
+        The blocking work (hashing the file, prosody analysis) runs in a
+        worker thread, so other tasks on the event loop keep running while the
+        audio is read and decoded.  Praat (``parselmouth``), which does most of
+        the measuring, holds the GIL, though: the loop can still pause for a
+        fraction of the analysis time (about half of it, so tens of
+        milliseconds for a few seconds of speech and most of a second for a
+        minute and a half), and concurrent recordings are analysed one after
+        the other, not in parallel.  A server that handles long recordings
+        should cap their length or run the engine in a separate process.
 
         If prosody analysis fails (audio that is unreadable, too short or
         sampled too low, for example), the turn continues with text-only
@@ -333,6 +421,7 @@ class IntentEngine:
         # result is cached under the profile that produced it
         with self._lock:
             assembler, profile = self._assembler, self._profile
+            generation = self._cache_generation
 
         # Check cache (results depend on the audio and on the profile)
         caching = use_cache and self._cache_size > 0
@@ -343,7 +432,9 @@ class IntentEngine:
             if cached is not None:
                 logger.debug("Cache hit for %s", audio_path)
                 # a copy, so callers cannot change what later hits return
-                return replace(cached, prosody_features=list(cached.prosody_features))
+                return replace(
+                    cached, prosody_features=self._copy_features(cached.prosody_features)
+                )
 
         # Step 1: STT transcription
         try:
@@ -420,10 +511,15 @@ class IntentEngine:
             prosody_features=features,
         )
 
-        # Cache a copy, so the caller changing the returned list is harmless;
-        # a text-only fallback is not kept, in case the failure was transient
+        # Cache a copy, so the caller changing the returned features is
+        # harmless; a text-only fallback is not kept, in case the failure was
+        # transient
         if caching and not degraded:
-            self._cache_put(cache_key, replace(result, prosody_features=list(features)))
+            self._cache_put(
+                cache_key,
+                replace(result, prosody_features=self._copy_features(features)),
+                generation,
+            )
 
         return result
 
@@ -431,6 +527,9 @@ class IntentEngine:
         self, audio_path: str, alignments: list[WordAlignment], untimed_text: str = ""
     ) -> tuple[list[WordAlignment], list[SpanFeatures], list[PauseInterval]]:
         """Measure alignments' features and pauses (blocking; runs in a worker thread).
+
+        A worker thread keeps the event loop from being blocked while audio is
+        read and decoded, not while Praat measures it: Praat holds the GIL.
 
         With *untimed_text* (a transcript the STT gave no word timings for)
         the whole recording is measured as a single span holding it, as
@@ -465,6 +564,10 @@ class IntentEngine:
             passed to the LLM as a hint.  It does not set the tone of the
             reply: the LLM chooses that from what the user needs (an angry
             caller may need calm), and reports it as ``Response.emotion``.
+            ``"neutral"`` (what ``Result.suggested_tone`` holds when no
+            emotion was reported; the classifier never reports a measured
+            neutral) or an empty tone sends no hint, since the IML the model
+            reads already says whether an emotion was detected.
 
         Returns
         -------
@@ -478,7 +581,10 @@ class IntentEngine:
             If the LLM call fails.
         """
         full_context = context or ""
-        if tone:
+        tone = (tone or "").strip()
+        # "neutral" is Result.suggested_tone when the engine abstained: no
+        # reading, not a measured neutral, so it must not be presented as one
+        if tone and tone.lower() != "neutral":
             tone_hint = (
                 f"The user's voice sounds '{tone}' (an automatic estimate that may be "
                 "wrong). Choose the response tone that serves what they need; do not "
@@ -552,7 +658,13 @@ class IntentEngine:
         prosody_features:
             Prosody features from the pipeline.
         emotion:
-            Detected emotion label.
+            Detected emotion label.  Without *emotion_confidence* the label
+            is taken at face value, so passing only ``Result.emotion``
+            reads the ``("neutral", 0.0)`` of "no emotion reported" as a
+            measured neutral speaker, which passes a rule that lists
+            ``neutral`` as acceptable (it fails open).  It also sees a single
+            emotion, not every emotion of the turn.  Gate on
+            :meth:`evaluate_result` instead.
         context:
             Optional context dict.
         emotion_confidence:
@@ -560,7 +672,8 @@ class IntentEngine:
             emotion counts as unknown, which fails any required emotion
             list. Pass ``Result.confidence``: the ``("neutral", 0.0)`` that
             means "no emotion reported" is then not mistaken for a calm
-            speaker. Prefer :meth:`evaluate_result`.
+            speaker. Prefer :meth:`evaluate_result`, which also weighs the
+            other utterances of the turn.
         min_emotion_confidence:
             Confidence needed for *emotion* to count as evidence.
 
@@ -592,17 +705,47 @@ class IntentEngine:
 
         The usual way to gate an action: pass the intent the LLM parsed
         (``Response.intent``) and the :class:`Result` of the same turn.
-        The emotion is only evidence when the assembler reported it with
-        enough confidence, so a single-utterance turn (no emotion reported)
-        fails a rule that requires a particular emotion and needs
-        verification rather than being allowed.
+
+        Every emotion the assembler reported with enough confidence counts,
+        not only :attr:`Result.emotion` (the most confident utterance): the
+        filter is run for that emotion and for each other utterance of
+        ``result.iml_document`` that carries one, and the most restrictive
+        decision wins.  A forbidden emotion in any one sentence of the turn
+        therefore blocks the action, and a required emotion list has to be
+        satisfied by every reported emotion.  Utterances without an emotion
+        (the assembler abstained) are not evidence either way.
+
+        When no emotion was reported at all, a single-utterance turn for
+        example, the emotion is unknown, which fails a rule that requires a
+        particular emotion (it needs verification rather than being allowed).
+        ``Result.emotion`` and ``Result.confidence`` are used as they are when
+        the result carries no usable document.
+
+        Gating with :meth:`evaluate_intent` and only ``result.emotion`` sees
+        one emotion per turn; use this method for anything that matters.
         """
-        return self.evaluate_intent(
-            intent,
-            result.prosody_features,
-            emotion=result.emotion,
-            context=context,
-            emotion_confidence=result.confidence,
+        if self._filter is None:
+            return Decision(allow=True)
+
+        pairs: list[tuple[str | None, float | None]] = [(result.emotion, result.confidence)]
+        document = getattr(result, "iml_document", None)
+        for utterance in getattr(document, "utterances", None) or ():
+            pair = (utterance.emotion, utterance.confidence)
+            # An abstention, or an emotion below the threshold the filter
+            # believes, says nothing; the primary pair is already in the list.
+            if pair[1] is None or resolve_emotion(*pair) is None or pair in pairs:
+                continue
+            pairs.append(pair)
+
+        return most_restrictive(
+            self.evaluate_intent(
+                intent,
+                result.prosody_features,
+                emotion=emotion,
+                context=context,
+                emotion_confidence=confidence,
+            )
+            for emotion, confidence in pairs
         )
 
     @staticmethod
@@ -668,7 +811,7 @@ class IntentEngine:
 
     # -- Profile management API --
 
-    def load_profile(self, path: str) -> ProsodyProfile:
+    def load_profile(self, path: str | os.PathLike[str]) -> ProsodyProfile:
         """Load a prosody profile from a JSON file.
 
         Parameters
@@ -689,7 +832,7 @@ class IntentEngine:
             validate (unknown pattern keys or values, a ``profile_version``
             that is not ``X.Y.Z``, no mappings, ...).
         """
-        profile = self._profile_loader.load(path)
+        profile = self._profile_loader.load(Path(path))
         result = self._profile_loader.validate(profile)
         if not result.valid:
             problems = "; ".join(f"{i.rule}: {i.message}" for i in result.errors)
@@ -835,23 +978,42 @@ class IntentEngine:
                 f"use `await engine.{name}(...)` instead"
             )
 
-        runner = self._get_sync_runner()
-        future = asyncio.run_coroutine_threadsafe(method(*args, **kwargs), runner.loop)
+        # Fetching the loop and scheduling on it happen under the lock that
+        # close() takes to retire it: a call is either queued on the loop
+        # before close() asks it to stop (and is cancelled with the rest) or
+        # finds the new loop, never a loop that is already shutting down.
+        with self._lock:
+            runner = self._get_sync_runner_locked()
+            coro = method(*args, **kwargs)
+            try:
+                future = asyncio.run_coroutine_threadsafe(coro, runner.loop)
+            except BaseException:
+                coro.close()  # never scheduled, so never awaited
+                raise
         try:
             return future.result()
         except KeyboardInterrupt:
             future.cancel()
             raise
+        finally:
+            # The exception raised above references this frame; without this
+            # the frame, the future and the exception form a cycle that keeps
+            # the engine (and its loop thread) alive until the next GC pass.
+            del future
 
     def _get_sync_runner(self) -> _LoopThread:
         with self._lock:
-            runner = self._sync_runner
-            # A forked child has the loop object but not its thread
-            if runner is None or runner.pid != os.getpid():
-                if runner is not None:
-                    runner.close()
-                runner = self._sync_runner = _LoopThread(self)
-            return runner
+            return self._get_sync_runner_locked()
+
+    def _get_sync_runner_locked(self) -> _LoopThread:
+        runner = self._sync_runner
+        # A forked child has the loop object but not its thread; a runner
+        # whose thread has ended can serve no more calls
+        if runner is None or runner.pid != os.getpid() or not runner.thread.is_alive():
+            if runner is not None:
+                runner.close()
+            runner = self._sync_runner = _LoopThread(self)
+        return runner
 
     def close(self) -> None:
         """Stop the background event loop used by the ``*_sync`` wrappers.
@@ -859,8 +1021,10 @@ class IntentEngine:
         The loop starts when a wrapper is first used and stops when the
         engine is garbage collected; call this to stop it sooner.  Safe to
         call more than once, and the wrappers start a new loop if used
-        again.  Do not call it while a ``*_sync`` call is running in
-        another thread.
+        again.  A ``*_sync`` call still running in another thread is
+        cancelled (its caller gets ``concurrent.futures.CancelledError``);
+        one that starts while this runs is cancelled the same way or served
+        by the new loop.
         """
         with self._lock:
             runner, self._sync_runner = self._sync_runner, None

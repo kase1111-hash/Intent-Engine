@@ -46,7 +46,8 @@ class Result:
     Pass it to ``IntentEngine.generate_response(tone=...)`` as a hint. It
     describes the user, not the reply: the tone to speak the reply in is
     ``Response.emotion``, which the LLM chooses (an angry caller may need a
-    calm reply)."""
+    calm reply).  ``"neutral"`` means no reading (the engine never reports a
+    measured neutral), so ``generate_response`` sends no hint for it."""
 
     prosody_features: list[SpanFeatures]
     """Per-span prosodic features extracted from audio (from ``prosody_protocol``)."""

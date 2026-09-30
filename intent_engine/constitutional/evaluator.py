@@ -20,6 +20,7 @@ from intent_engine.constitutional.rules import (
     ProsodyCondition,
     normalize_emotion,
     normalize_phrase,
+    phrase_readings,
 )
 from intent_engine.models.decision import Decision
 
@@ -40,6 +41,10 @@ PITCH_VARIANCE_THRESHOLDS = {
 
 # A contour needs this many voiced samples for its percentiles to mean
 # something (the same limit ``prosody_protocol`` uses for its own spread).
+# Percentiles are interpolated between the samples themselves (the
+# "inclusive" method), so they never leave the observed pitch range even for
+# a contour this short; a lone stray sample only stops mattering entirely
+# from 11 samples on (the 90th percentile then falls on the second-highest).
 _MIN_CONTOUR_SAMPLES = 5
 
 
@@ -55,6 +60,13 @@ def match_triggers(intent: str, triggers: Sequence[str]) -> bool:
     never matches.  Write triggers as the shortest phrase to guard;
     inflected forms (``"payments"`` for ``"payment"``) are separate words.
 
+    The intent is also read the other ways an invisible character or a run
+    of capitals can be meant (see ``phrase_readings``): ``"del\u200bete_all"``
+    and ``"deleteALLFiles"`` match ``"delete all"`` too.  Only NFKC folding is
+    applied to letters, so a look-alike from another script (Cyrillic ``е``
+    for Latin ``e``) does not match; write triggers in the script your
+    intent labels use.
+
     Parameters
     ----------
     intent:
@@ -69,10 +81,10 @@ def match_triggers(intent: str, triggers: Sequence[str]) -> bool:
     """
     if isinstance(triggers, str):  # One trigger, not a sequence of letters.
         triggers = (triggers,)
-    padded_intent = f" {normalize_phrase(intent)} "
+    padded_intents = [f" {reading} " for reading in phrase_readings(intent)]
     for trigger in triggers:
         phrase = normalize_phrase(trigger)
-        if phrase and f" {phrase} " in padded_intent:
+        if phrase and any(f" {phrase} " in padded for padded in padded_intents):
             return True
     return False
 
@@ -85,14 +97,19 @@ def _semitones(low_hz: float, high_hz: float) -> float:
 def _span_pitch_spread(feat: SpanFeatures) -> float | None:
     """Return how far pitch moves within one span, in semitones.
 
-    Uses the 10th-90th percentile spread of ``f0_contour``, which ignores a
-    stray sample at either end, and falls back to ``f0_range`` when the
-    contour is too short.  ``None`` when the span has no usable pitch.
+    Uses the 10th-90th percentile spread of ``f0_contour`` (interpolated
+    within the observed samples, so never wider than the contour's own
+    min-max range), which ignores a lone stray sample at either end once the
+    contour has 11 or more samples and only damps it below that, and falls
+    back to ``f0_range`` when the contour is too short or has no usable
+    percentiles.  ``None`` when the span has no usable pitch.
     """
     contour = [v for v in feat.f0_contour or () if math.isfinite(v) and v > 0.0]
     if len(contour) >= _MIN_CONTOUR_SAMPLES:
-        deciles = statistics.quantiles(contour, n=10)
-        return _semitones(deciles[0], deciles[-1])
+        deciles = statistics.quantiles(contour, n=10, method="inclusive")
+        low, high = deciles[0], deciles[-1]
+        if math.isfinite(low) and math.isfinite(high) and 0.0 < low <= high:
+            return _semitones(low, high)
     if feat.f0_range is not None:
         lo, hi = feat.f0_range
         if math.isfinite(lo) and math.isfinite(hi) and 0.0 < lo <= hi:

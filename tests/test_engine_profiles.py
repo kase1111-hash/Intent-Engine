@@ -191,6 +191,29 @@ class TestProfileValidation:
         with pytest.raises(ProfileError, match="P5"):
             create_mocked_engine(prosody_profile=str(path))
 
+    @pytest.mark.parametrize("path", ["", "   "])
+    def test_an_empty_profile_path_is_an_error_not_no_profile(self, path: str) -> None:
+        # like constitutional_rules: an unset environment variable expands to ""
+        with pytest.raises(ValueError, match="prosody_profile"):
+            create_mocked_engine(prosody_profile=path)
+
+    def test_none_means_no_profile(self) -> None:
+        assert create_mocked_engine(prosody_profile=None)._profile is None
+
+    def test_a_pathlib_path_is_accepted(self, tmp_path: Path) -> None:
+        path = _write_profile(tmp_path / "profile.json")
+
+        engine = create_mocked_engine(prosody_profile=path)
+
+        assert engine._profile is not None
+        assert engine._profile.user_id == "user-1"
+        assert engine.load_profile(path).user_id == "user-1"
+
+    @pytest.mark.parametrize("value", [False, 0, b"profile.json", 3.5])
+    def test_other_types_are_rejected_not_treated_as_no_profile(self, value: object) -> None:
+        with pytest.raises(TypeError, match="prosody_profile"):
+            create_mocked_engine(prosody_profile=value)
+
     def test_invalid_profile_file_is_rejected_by_load_profile(self, tmp_path: Path) -> None:
         engine = create_mocked_engine()
         path = _write_profile(tmp_path / "bad.json", profile_version="1.0")

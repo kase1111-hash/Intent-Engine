@@ -20,6 +20,7 @@ Rule file schema (see ``spec.md``)::
         verification:                   # optional: what to do when
           method: <explicit_confirmation|two_factor>  # required_prosody
           retries: <int >= 0>           # fails; omit to deny outright
+                                        # (needs required_prosody)
 
 ``speaking_rate`` is in syllables per second of speaking time, the unit of
 ``SpanFeatures.speech_rate`` (conversational speech is roughly 3-6), not
@@ -32,7 +33,11 @@ case and ``_``/``-`` separators (``"delete all"`` matches
 The schema is strict: an unknown key, a misspelled section or a
 condition of the wrong shape raises ``ValueError`` when the rules are
 loaded instead of being ignored, so a safety condition can never be
-dropped silently.  In particular the voice-quality, jitter, shimmer and
+dropped silently.  That includes settings that could never take effect:
+a ``verification`` block without ``required_prosody`` (it only applies
+when that fails) and a condition that lists nothing.  A rule with neither
+``required_prosody`` nor ``forbidden_prosody`` is valid (it always allows)
+but logs a warning when loaded.  In particular the voice-quality, jitter, shimmer and
 intensity measurements that ``prosody_protocol`` extracts are not
 available as rule conditions.
 """
@@ -42,6 +47,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import reprlib
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -70,8 +76,28 @@ PITCH_VARIANCE_LEVELS = ("low", "normal", "high")
 # rules ask for verification, the last one listed here wins.
 VERIFICATION_METHODS = ("explicit_confirmation", "two_factor")
 
+# Error messages quote the offending YAML value.  Aliases share objects, so a
+# few hundred bytes of nested anchors describe a value whose full repr is
+# exponentially long (an "alias bomb"); quote a bounded excerpt instead.
+_excerpt = reprlib.Repr()
+_excerpt.maxlevel = 2
+_excerpt.maxlist = _excerpt.maxtuple = _excerpt.maxset = _excerpt.maxdict = 4
+_excerpt.maxstring = _excerpt.maxother = 60
+
+
+def _show(value: object) -> str:
+    """A short ``repr`` of *value* that is safe for arbitrarily nested data."""
+    return _excerpt.repr(value)
+
+
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+# ... and the end of a run of capitals before a capitalised word (HTTPServer)
+_CAMEL_ACRONYM_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _SEPARATORS = re.compile(r"[\W_]+")
+# Format characters (zero-width joiner, soft hyphen, ...), combining marks and
+# control characters: invisible, and whether one was meant as a word separator
+# or as nothing cannot be told.
+_IGNORABLE_CATEGORIES = frozenset({"Cf", "Mn", "Me", "Cc"})
 
 
 def normalize_phrase(text: str) -> str:
@@ -86,6 +112,28 @@ def normalize_phrase(text: str) -> str:
     return _SEPARATORS.sub(" ", text.casefold()).strip()
 
 
+def phrase_readings(text: str) -> tuple[str, ...]:
+    """Return the distinct ways *text* can be read as lower-case words.
+
+    The first is :func:`normalize_phrase`.  The others cover what that cannot
+    decide: an invisible character inside a word (soft hyphen, zero-width
+    joiner, NUL, a combining mark that does not compose) may have been meant
+    as a separator or as nothing, and a run of capitals may or may not end a
+    word (``deleteALLFiles`` is ``delete all files``, ``getIDs`` is
+    ``get ids``).  Matching under any reading errs on the side of guarding an
+    action; only NFKC folding is applied, so look-alike letters from another
+    script are different letters.
+    """
+    folded = unicodedata.normalize("NFKC", text)
+    bare = "".join(c for c in folded if unicodedata.category(c) not in _IGNORABLE_CATEGORIES)
+    readings: dict[str, None] = {}
+    for candidate in (folded, bare):
+        for boundary in (_CAMEL_BOUNDARY, _CAMEL_ACRONYM_BOUNDARY):
+            reading = _SEPARATORS.sub(" ", boundary.sub(" ", candidate).casefold()).strip()
+            readings[reading] = None
+    return tuple(readings)
+
+
 def normalize_emotion(label: str) -> str:
     """Return an emotion label in the form rules and comparisons use."""
     return label.strip().lower()
@@ -97,33 +145,35 @@ def _str_tuple(value: Iterable[str], what: str) -> tuple[str, ...]:
     A bare ``str`` is rejected: it would be iterated character by character.
     """
     if isinstance(value, (str, bytes, Mapping)) or not isinstance(value, Iterable):
-        raise TypeError(f"{what} must be a list of strings, got {value!r}")
+        raise TypeError(f"{what} must be a list of strings, got {_show(value)}")
     items = tuple(value)
     for item in items:
         if not isinstance(item, str):
-            raise TypeError(f"{what} must contain only strings, got {item!r}")
+            raise TypeError(f"{what} must contain only strings, got {_show(item)}")
     return items
 
 
 def _rate_range(value: Iterable[float]) -> tuple[float, float]:
     """Return *value* as a validated ``(min, max)`` pair of rates."""
-    bad = ValueError(
-        f"speaking_rate must be [min, max] in syllables/second with "
-        f"0 <= min <= max, got {value!r}"
-    )
+    def bad() -> ValueError:
+        return ValueError(
+            f"speaking_rate must be [min, max] in syllables/second with "
+            f"0 <= min <= max, got {_show(value)}"
+        )
+
     if isinstance(value, (str, bytes, Mapping)) or not isinstance(value, Iterable):
-        raise bad
+        raise bad()
     pair = tuple(value)
     if len(pair) != 2:
-        raise bad
+        raise bad()
     for bound in pair:
         if isinstance(bound, bool) or not isinstance(bound, (int, float)):
-            raise bad
+            raise bad()
         if not math.isfinite(bound) or bound < 0:
-            raise bad
+            raise bad()
     low, high = float(pair[0]), float(pair[1])
     if low > high:
-        raise bad
+        raise bad()
     return (low, high)
 
 
@@ -167,12 +217,19 @@ class ProsodyCondition:
         if level is not None:
             if not isinstance(level, str) or level.strip().lower() not in PITCH_VARIANCE_LEVELS:
                 raise ValueError(
-                    f"pitch_variance must be one of {list(PITCH_VARIANCE_LEVELS)}, got {level!r}"
+                    f"pitch_variance must be one of {list(PITCH_VARIANCE_LEVELS)}, "
+                    f"got {_show(level)}"
                 )
             object.__setattr__(self, "pitch_variance", level.strip().lower())
 
         if self.speaking_rate is not None:
             object.__setattr__(self, "speaking_rate", _rate_range(self.speaking_rate))
+
+        if not labels and self.pitch_variance is None and self.speaking_rate is None:
+            raise ValueError(
+                "a prosody condition needs at least one of emotion, pitch_variance "
+                "and speaking_rate; an empty one checks nothing"
+            )
 
 
 @dataclass(frozen=True)
@@ -196,13 +253,14 @@ class Verification:
         method = self.method
         if not isinstance(method, str) or method.strip().lower() not in VERIFICATION_METHODS:
             raise ValueError(
-                f"verification method must be one of {list(VERIFICATION_METHODS)}, got {method!r}"
+                f"verification method must be one of {list(VERIFICATION_METHODS)}, "
+                f"got {_show(method)}"
             )
         object.__setattr__(self, "method", method.strip().lower())
 
         retries = self.retries
         if isinstance(retries, bool) or not isinstance(retries, int) or retries < 0:
-            raise ValueError(f"verification retries must be an integer >= 0, got {retries!r}")
+            raise ValueError(f"verification retries must be an integer >= 0, got {_show(retries)}")
 
 
 @dataclass(frozen=True)
@@ -227,8 +285,9 @@ class ConstitutionalRule:
         forbidden).  Nothing is blocked when the emotion is unknown, so
         pair it with a required emotion list to fail closed.
     verification:
-        Verification requirements when prosody checks fail.
-        ``None`` means the action is denied outright.
+        Verification requirements when ``required_prosody`` fails (so it
+        needs ``required_prosody``).  ``None`` means the action is denied
+        outright.
     """
 
     name: str
@@ -239,20 +298,20 @@ class ConstitutionalRule:
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
-            raise ValueError(f"rule name must be a non-empty string, got {self.name!r}")
+            raise ValueError(f"rule name must be a non-empty string, got {_show(self.name)}")
 
         triggers = _str_tuple(self.triggers, "triggers")
         for trigger in triggers:
             if not normalize_phrase(trigger):
-                raise ValueError(f"triggers must contain words, got {trigger!r}")
+                raise ValueError(f"triggers must contain words, got {_show(trigger)}")
         object.__setattr__(self, "triggers", triggers)
 
         for section in ("required_prosody", "forbidden_prosody"):
             value = getattr(self, section)
             if value is not None and not isinstance(value, ProsodyCondition):
-                raise TypeError(f"{section} must be a ProsodyCondition, got {value!r}")
+                raise TypeError(f"{section} must be a ProsodyCondition, got {_show(value)}")
         if self.verification is not None and not isinstance(self.verification, Verification):
-            raise TypeError(f"verification must be a Verification, got {self.verification!r}")
+            raise TypeError(f"verification must be a Verification, got {_show(self.verification)}")
 
         forbidden = self.forbidden_prosody
         if forbidden is not None and (
@@ -261,6 +320,14 @@ class ConstitutionalRule:
             raise ValueError(
                 "forbidden_prosody supports only 'emotion' "
                 "(pitch_variance and speaking_rate can only be required)"
+            )
+
+        if self.verification is not None and self.required_prosody is None:
+            # Verification is what a failed required_prosody asks for; without
+            # it the block is never consulted and would read like a safeguard.
+            raise ValueError(
+                "verification only applies when required_prosody fails; add "
+                "required_prosody or remove verification"
             )
 
 
@@ -287,7 +354,7 @@ class _UniqueKeyLoader(yaml.SafeLoader):
                     raise yaml.constructor.ConstructorError(
                         "while constructing a mapping",
                         node.start_mark,
-                        f"found duplicate key {key!r}; the earlier definition "
+                        f"found duplicate key {_show(key)}; the earlier definition "
                         "would be silently discarded",
                         key_node.start_mark,
                     )
@@ -309,7 +376,7 @@ def _require_mapping(section: str, data: Any) -> dict[Any, Any]:
     if not isinstance(data, dict) or not data:
         raise ValueError(
             f"{section} must be a mapping with at least one entry (omit it to set none), "
-            f"got {data!r}"
+            f"got {_show(data)}"
         )
     return data
 
@@ -361,6 +428,13 @@ def _parse_rule(name: str, data: Any) -> ConstitutionalRule:
         rule = ConstitutionalRule(name=name, triggers=triggers, **sections)
     except TypeError as exc:
         raise ValueError(str(exc)) from exc
+
+    if rule.required_prosody is None and rule.forbidden_prosody is None:
+        logger.warning(
+            "Constitutional rule '%s' has neither required_prosody nor forbidden_prosody: "
+            "it matches its triggers but never restricts anything.",
+            name,
+        )
 
     labels = sorted({
         emotion
@@ -441,7 +515,7 @@ def parse_rules_yaml(path: str | Path) -> list[ConstitutionalRule]:
     rules: list[ConstitutionalRule] = []
     for rule_name, rule_data in rules_data.items():
         if not isinstance(rule_name, str):
-            raise ValueError(f"{path}: rule name must be a string, got {rule_name!r}")
+            raise ValueError(f"{path}: rule name must be a string, got {_show(rule_name)}")
         try:
             rules.append(_parse_rule(rule_name, rule_data))
         except ValueError as exc:

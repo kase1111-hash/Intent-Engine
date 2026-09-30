@@ -151,3 +151,21 @@ class TestRulesPath:
 
     def test_none_runs_without_a_filter(self) -> None:
         assert create_mocked_engine(constitutional_rules=None)._filter is None
+
+    def test_a_pathlib_path_is_accepted(self, tmp_path: Path) -> None:
+        rules = tmp_path / "rules.yaml"
+        rules.write_text(Path(RULES).read_text(encoding="utf-8"), encoding="utf-8")
+
+        engine = create_mocked_engine(constitutional_rules=rules)
+
+        assert engine._filter is not None
+        assert len(engine._filter.rules) == 4
+
+    def test_a_missing_pathlib_path_is_an_error(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            create_mocked_engine(constitutional_rules=tmp_path / "nope.yaml")
+
+    @pytest.mark.parametrize("value", [False, 0, b"rules.yaml", 3.5, ["rules.yaml"]])
+    def test_other_types_are_rejected_not_treated_as_no_filter(self, value: object) -> None:
+        with pytest.raises(TypeError, match="constitutional_rules"):
+            create_mocked_engine(constitutional_rules=value)

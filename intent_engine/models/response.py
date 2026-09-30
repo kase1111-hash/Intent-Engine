@@ -23,5 +23,8 @@ class Response:
     intent: str | None = None
     """User intent parsed by the LLM (e.g. ``"delete_files"``), or ``None``.
 
-    This is what to pass to ``IntentEngine.evaluate_intent()``.
+    Pass it to ``IntentEngine.evaluate_result(response.intent, result)``,
+    which also supplies the emotion and its confidence from the ``Result``
+    of the same turn.  (``evaluate_intent()`` takes the emotion as given
+    unless ``emotion_confidence=result.confidence`` is passed too.)
     """
